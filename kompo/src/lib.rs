@@ -126,7 +126,7 @@ unsafe extern "C" fn get_load_paths_func(_: VALUE, _: VALUE) -> VALUE {
 
     let paths: Vec<VALUE> = data
         .split(|str| str == ',')
-        .map(|path| unsafe { rb_str_new(path.as_ptr() as *const c_char, path.len() as i64) })
+        .map(|path| unsafe { rb_str_new(path.as_ptr() as *const c_char, path.len() as c_long) })
         .collect();
 
     unsafe { rb_ary_new_from_values(paths.len() as c_long, paths.as_ptr()) }
