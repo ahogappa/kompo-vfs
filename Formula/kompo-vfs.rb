@@ -10,7 +10,6 @@ class KompoVfs < Formula
   def install
     system "cargo build --release"
 
-    bin.install "target/release/kompo-cli"
     lib.install "target/release/libkompo.a"
   end
 

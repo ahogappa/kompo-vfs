@@ -1,0 +1,24 @@
+[package]
+name = "kompo_fs"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+libc = "0.2.169"
+trie-rs = "0.4.2"
+fxhash = "0.2.1"
+kompo_storage = { path = "../kompo_storage" }
+kompo_wrap = { path = "../kompo_wrap" } 
+errno = "*"
+
+[build-dependencies]
+cc = { version = "1.0", features = ["parallel"] }
+
+
+[profile.release]
+panic = "abort"
