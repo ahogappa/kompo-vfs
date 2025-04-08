@@ -1,1 +1,1 @@
-kompo-vfs is the CLI and library used with the kompo gem.
+kompo-vfs is library used with the kompo gem.
