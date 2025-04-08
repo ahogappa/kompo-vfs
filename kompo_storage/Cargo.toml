@@ -1,0 +1,9 @@
+[package]
+name = "kompo_storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2.169"
+trie-rs = "0.4.2"
+fxhash = "0.2.1"
