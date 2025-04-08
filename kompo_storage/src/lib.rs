@@ -35,6 +35,27 @@ pub struct Fs<'a> {
     fd_map: HashMap<i32, FileType<'a>>,
 }
 
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+type DirEntryName = [u8; 256];
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn convert_byte(b: u8) -> u8 {
+    b
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+type DirEntryName = [i8; 256];
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn convert_byte(b: u8) -> i8 {
+    b as i8
+}
+
+#[cfg(target_os = "macos")]
+type DirEntryName = [i8; 256];
+#[cfg(target_os = "macos")]
+fn convert_byte(b: u8) -> i8 {
+    b as i8
+}
+
 impl<'a> Fs<'a> {
     const DEV: libc::dev_t = libc::makedev(2222, 0); // create fake device number. TODO: get unused device number dynamically.
 
@@ -302,15 +323,15 @@ impl<'a> Fs<'a> {
                     None => unreachable!(),
                 };
                 let inode = self.get_inode_from_path(&full_path);
-                let mut buf = [0; 256];
-
+                let mut buf: DirEntryName = [0; 256];
                 full_path
                     .last()
                     .unwrap()
                     .as_bytes()
+                    .iter()
                     .take(255)
-                    .read(&mut buf)
-                    .unwrap();
+                    .enumerate()
+                    .for_each(|(i, &b)| buf[i] = convert_byte(b));
 
                 dir.offset += 1;
 
