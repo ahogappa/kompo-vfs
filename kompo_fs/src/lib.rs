@@ -37,7 +37,6 @@ extern "C" {
     static PATHS: libc::c_char;
     static PATHS_SIZE: libc::c_int;
     static WD: libc::c_char;
-    static START_FILE_PATH: libc::c_char;
 
     static rb_cObject: VALUE;
     fn rb_define_class(name: *const libc::c_char, rb_super: VALUE) -> VALUE;
@@ -57,28 +56,6 @@ extern "C" {
         data2: VALUE,
     ) -> VALUE;
     fn rb_yield(v: VALUE) -> VALUE;
-}
-
-#[no_mangle]
-pub unsafe extern "C-unwind" fn get_start_file() -> *const libc::c_char {
-    // let path = util::raw_path_to_kompo_path(&START_FILE_PATH);
-    // let path = path
-    //     .iter()
-    //     .map(|os_str| os_str.as_os_str())
-    //     .collect::<Vec<_>>();
-
-    // let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
-    // {
-    //     let trie = trie.lock().expect("trie is poisoned");
-
-    //     trie.file_read(&path).expect("Not fund start file")
-    // }
-    0 as *const libc::c_char
-}
-
-#[no_mangle]
-pub unsafe extern "C-unwind" fn get_start_file_name() -> *const libc::c_char {
-    std::ffi::CStr::from_ptr(&START_FILE_PATH).as_ptr()
 }
 
 fn initialize_trie() -> std::sync::Arc<std::sync::Mutex<kompo_storage::Fs<'static>>> {
