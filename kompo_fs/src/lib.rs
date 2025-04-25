@@ -1,6 +1,5 @@
 mod glue;
 pub mod util;
-use std::collections::HashMap;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::ops::Range;
@@ -12,9 +11,6 @@ static TRIE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<kompo_storage::
 
 pub static mut WORKING_DIR: std::cell::RefCell<Option<std::borrow::Cow<'static, std::ffi::OsStr>>> =
     std::cell::RefCell::new(None);
-
-static FD_TABLE: std::sync::LazyLock<std::sync::Arc<std::sync::RwLock<HashMap<i32, Vec<u8>>>>> =
-    std::sync::LazyLock::new(|| std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())));
 
 pub static mut THREAD_CONTEXT: std::sync::OnceLock<
     std::sync::Arc<std::sync::RwLock<std::collections::HashMap<libc::pthread_t, bool>>>,
