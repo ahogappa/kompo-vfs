@@ -5,7 +5,6 @@ use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use trie_rs::map::Trie;
 use trie_rs::map::TrieBuilder;
@@ -38,8 +37,8 @@ pub struct Fs<'a> {
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 type DirEntryName = [u8; 256];
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-fn convert_byte(b: u8) -> u8 {
-    b
+fn convert_byte(b: &u8) -> u8 {
+    *b
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -50,10 +49,10 @@ fn convert_byte(b: u8) -> i8 {
 }
 
 #[cfg(target_os = "macos")]
-type DirEntryName = [i8; 256];
+type DirEntryName = [i8; 1024];
 #[cfg(target_os = "macos")]
-fn convert_byte(b: u8) -> i8 {
-    b as i8
+fn convert_byte(b: &u8) -> i8 {
+    *b as i8
 }
 
 impl<'a> Fs<'a> {
@@ -323,30 +322,46 @@ impl<'a> Fs<'a> {
                     None => unreachable!(),
                 };
                 let inode = self.get_inode_from_path(&full_path);
-                let mut buf: DirEntryName = [0; 256];
-                full_path
-                    .last()
-                    .unwrap()
-                    .as_bytes()
-                    .iter()
-                    .take(255)
-                    .enumerate()
-                    .for_each(|(i, &b)| buf[i] = convert_byte(b));
+                let dirent = Self::create_dirent(inode, file_type, full_path);
 
                 dir.offset += 1;
-
-                let dirent = libc::dirent {
-                    d_ino: inode,
-                    d_off: 0,    // TODO
-                    d_reclen: 0, // TODO
-                    d_type: file_type,
-                    d_name: buf,
-                };
 
                 let dirent = Box::new(dirent);
                 Some(Box::into_raw(dirent) as *mut libc::dirent)
             }
             _ => None,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn create_dirent(inode: u64, file_type: u8, full_path: Vec<&OsStr>) -> libc::dirent {
+        let mut buf: DirEntryName = [0; 256];
+        let last_path = full_path.last().unwrap();
+        buf[..last_path.len()].copy_from_slice(&last_path.as_bytes());
+
+        libc::dirent {
+            d_ino: inode,
+            d_off: 0,    // TODO
+            d_reclen: 0, // TODO
+            d_type: file_type,
+            d_name: buf,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn create_dirent(inode: u64, file_type: u8, full_path: Vec<&OsStr>) -> libc::dirent {
+        let mut buf: DirEntryName = [0; 1024];
+        let last_path = full_path.last().unwrap();
+        let convert_path: Vec<i8> = last_path.as_bytes().iter().map(convert_byte).collect();
+        buf[..last_path.len()].copy_from_slice(&convert_path);
+
+        libc::dirent {
+            d_ino: inode,
+            d_reclen: 0, // TODO
+            d_type: file_type,
+            d_name: buf,
+            d_seekoff: 0, // TODO
+            d_namlen: last_path.len() as u16,
         }
     }
 

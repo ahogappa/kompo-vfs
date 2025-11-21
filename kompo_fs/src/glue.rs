@@ -67,7 +67,7 @@ pub fn open_from_fs(path: *const libc::c_char, oflag: libc::c_int, mode: libc::m
         })
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/' {
+    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
         let expand_path = util::expand_kompo_path(path);
 
         inner_open(expand_path)
@@ -115,7 +115,14 @@ pub unsafe fn openat_from_fs(
         })
     }
 
-    if flags & libc::O_CREAT == libc::O_CREAT || flags & libc::O_TMPFILE == libc::O_TMPFILE {
+    #[cfg(target_os = "linux")]
+    let is_create_flag =
+        flags & libc::O_CREAT == libc::O_CREAT || flags & libc::O_TMPFILE == libc::O_TMPFILE;
+
+    #[cfg(not(target_os = "linux"))]
+    let is_create_flag = flags & libc::O_CREAT == libc::O_CREAT;
+
+    if is_create_flag {
         return kompo_wrap::OPENAT_HANDLE(dirfd, pathname, flags, mode);
     }
 
@@ -123,7 +130,10 @@ pub unsafe fn openat_from_fs(
         return open_from_fs(pathname, flags, mode);
     }
 
-    if dirfd == libc::AT_FDCWD && WORKING_DIR.borrow().is_some() && *pathname != b'/' {
+    if dirfd == libc::AT_FDCWD
+        && WORKING_DIR.borrow().is_some()
+        && *pathname != b'/'.try_into().unwrap()
+    {
         return inner_openat(dirfd, pathname, flags, mode);
     }
 
@@ -182,7 +192,7 @@ pub fn stat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
         }
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/' {
+    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
         let expand_path = util::expand_kompo_path(path);
 
         inner_stat(expand_path, stat)
@@ -234,7 +244,10 @@ pub unsafe fn fstatat_from_fs(
         return stat_from_fs(pathname, buf);
     }
 
-    if dirfd == libc::AT_FDCWD && WORKING_DIR.borrow().is_some() && *pathname != b'/' {
+    if dirfd == libc::AT_FDCWD
+        && WORKING_DIR.borrow().is_some()
+        && *pathname != b'/'.try_into().unwrap()
+    {
         return inner_fstatat(dirfd, pathname, buf, flags);
     }
 
@@ -281,7 +294,7 @@ pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
         }
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/' {
+    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
         let expand_path = util::expand_kompo_path(path);
 
         inner_lstat(expand_path, stat)
@@ -500,7 +513,7 @@ pub fn opendir_from_fs(path: *const libc::c_char) -> *mut libc::DIR {
         }
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/' {
+    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
         let expand_path = util::expand_kompo_path(path);
 
         inner_opendir(expand_path)
@@ -547,15 +560,20 @@ pub unsafe extern "C-unwind" fn realpath_from_fs(
             expand_path
         } else {
             let expand_path = unsafe { CStr::from_ptr(util::expand_kompo_path(path)) };
-            let buf =
-                unsafe { std::slice::from_raw_parts_mut(resolved_path, libc::PATH_MAX as usize) };
-            buf.copy_from_slice(expand_path.to_bytes_with_nul());
+            let bytes = expand_path.to_bytes_with_nul();
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    bytes.as_ptr() as *const libc::c_char,
+                    resolved_path,
+                    bytes.len(),
+                );
+            }
 
-            buf.as_ptr()
+            resolved_path
         }
     }
 
-    if WORKING_DIR.borrow().is_some() && *path != b'/' {
+    if WORKING_DIR.borrow().is_some() && *path != b'/'.try_into().unwrap() {
         inner_realpath(path, resolved_path)
     } else if util::is_under_kompo_working_dir(path) {
         inner_realpath(path, resolved_path)
