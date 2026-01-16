@@ -3,7 +3,7 @@ use std::{
     ffi::{CStr, CString},
     hash::{DefaultHasher, Hash, Hasher},
     os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     str::FromStr,
 };
 

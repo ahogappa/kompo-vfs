@@ -115,7 +115,7 @@ pub fn initialize_fs() -> kompo_storage::Fs<'static> {
     let file_slice = unsafe { std::slice::from_raw_parts(&FILES, FILES_SIZE as _) };
 
     let splited_path_array = path_slice
-        .split_inclusive(|a| *a == b'\0')
+        .split_inclusive(|a| *a == b'\0'.try_into().unwrap())
         .collect::<Vec<_>>();
 
     let files_sizes =
@@ -123,14 +123,15 @@ pub fn initialize_fs() -> kompo_storage::Fs<'static> {
 
     for (i, path_byte) in splited_path_array.into_iter().enumerate() {
         let path = Path::new(unsafe {
-            CStr::from_bytes_with_nul_unchecked(path_byte)
-                .to_str()
-                .unwrap()
+            let bytes =
+                std::slice::from_raw_parts(path_byte.as_ptr() as *const u8, path_byte.len());
+            CStr::from_bytes_with_nul_unchecked(bytes).to_str().unwrap()
         });
         let path = path.iter().collect::<Vec<_>>();
 
         let range: Range<usize> = files_sizes[i] as usize..files_sizes[i + 1] as usize;
         let file = &file_slice[range];
+        let file = unsafe { std::slice::from_raw_parts(file.as_ptr() as *const u8, file.len()) };
 
         builder.push(path, file);
     }

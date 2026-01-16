@@ -1,6 +1,7 @@
 // use kompo_fs::*;
-use std::{collections::HashMap, ffi::CStr, path};
+use std::collections::HashMap;
 
+#[allow(dead_code)]
 fn initialize_thread_context(
 ) -> std::sync::Arc<std::sync::RwLock<std::collections::HashMap<libc::pthread_t, bool>>> {
     let mut thread_context = HashMap::new();
