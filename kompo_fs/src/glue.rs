@@ -155,6 +155,11 @@ pub fn close_from_fs(fd: i32) -> i32 {
 #[no_mangle]
 pub fn stat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
     fn inner_stat(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
+        if stat.is_null() {
+            errno::set_errno(errno::Errno(libc::EFAULT));
+            return -1;
+        }
+
         let path = unsafe { CStr::from_ptr(path) };
         let path = Path::new(path.to_str().expect("invalid path"));
         let path = path
@@ -176,7 +181,7 @@ pub fn stat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
         let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
         {
             let trie = trie.lock().unwrap();
-            let ret = trie.stat(&sarch_path, stat);
+            let ret = trie.stat(&sarch_path, unsafe { &mut *stat });
             if ret.is_some() {
                 unsafe {
                     FILE_TYPE_CACHE
@@ -216,6 +221,11 @@ pub unsafe fn fstatat_from_fs(
         stat: *mut libc::stat,
         flags: libc::c_int,
     ) -> i32 {
+        if stat.is_null() {
+            errno::set_errno(errno::Errno(libc::EFAULT));
+            return -1;
+        }
+
         let path = unsafe { CStr::from_ptr(path) };
         let path = PathBuf::from_str(path.to_str().expect("invalid path")).expect("invalid path");
 
@@ -230,7 +240,7 @@ pub unsafe fn fstatat_from_fs(
         let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
         {
             let trie = trie.lock().unwrap();
-            let ret = trie.stat(&sarch_path, stat);
+            let ret = trie.stat(&sarch_path, unsafe { &mut *stat });
             if ret.is_some() {
                 0
             } else {
@@ -257,6 +267,11 @@ pub unsafe fn fstatat_from_fs(
 #[no_mangle]
 pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
     fn inner_lstat(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
+        if stat.is_null() {
+            errno::set_errno(errno::Errno(libc::EFAULT));
+            return -1;
+        }
+
         let path = unsafe { CStr::from_ptr(path) };
         let path = Path::new(path.to_str().expect("invalid path"));
         let path = path
@@ -278,7 +293,7 @@ pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
         let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
         {
             let trie = trie.lock().unwrap();
-            let ret = trie.lstat(&sarch_path, stat);
+            let ret = trie.lstat(&sarch_path, unsafe { &mut *stat });
             if ret.is_some() {
                 unsafe {
                     FILE_TYPE_CACHE
@@ -308,11 +323,16 @@ pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
 #[no_mangle]
 pub fn fstat_from_fs(fd: i32, stat: *mut libc::stat) -> i32 {
     fn inner_fstat(fd: i32, stat: *mut libc::stat) -> i32 {
+        if stat.is_null() {
+            errno::set_errno(errno::Errno(libc::EFAULT));
+            return -1;
+        }
+
         let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
-        let ret = trie.lock().unwrap().fstat(fd, stat);
+        let ret = trie.lock().unwrap().fstat(fd, unsafe { &mut *stat });
 
         if ret.is_some() {
-            ret.unwrap()
+            0
         } else {
             errno::set_errno(errno::Errno(libc::ENOENT));
             -1

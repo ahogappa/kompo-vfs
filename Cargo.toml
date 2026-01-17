@@ -1,4 +1,4 @@
 [workspace]
 
-members = ["kompo_fs", "kompo_storage", "kompo_wrap"]
+members = ["kompo_fs", "kompo_storage", "kompo_wrap", "kompo_fs/kompo_fs_test_data"]
 resolver = "2"

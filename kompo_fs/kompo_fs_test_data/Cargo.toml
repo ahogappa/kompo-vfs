@@ -1,0 +1,11 @@
+[package]
+name = "kompo_fs_test_data"
+version = "0.1.0"
+edition = "2021"
+links = "kompo_test_data"
+
+[dependencies]
+libc = "0.2"
+
+[build-dependencies]
+cc = "1.2"
