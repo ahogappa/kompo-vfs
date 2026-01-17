@@ -108,3 +108,121 @@ pub fn is_dir_exists_in_kompo(dir: *mut libc::DIR) -> bool {
     let _ = Box::into_raw(dir);
     bool
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_canonicalize_path_simple() {
+        let mut base = PathBuf::from("/home/user");
+        let join_path = PathBuf::from("documents");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/home/user/documents"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_with_parent_dir() {
+        let mut base = PathBuf::from("/home/user/projects");
+        let join_path = PathBuf::from("../documents");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/home/user/documents"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_multiple_parent_dirs() {
+        let mut base = PathBuf::from("/home/user/projects/rust");
+        let join_path = PathBuf::from("../../documents/work");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/home/user/documents/work"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_with_current_dir() {
+        let mut base = PathBuf::from("/home/user");
+        let join_path = PathBuf::from("./documents/./work");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/home/user/documents/work"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_complex() {
+        let mut base = PathBuf::from("/home/user/projects");
+        let join_path = PathBuf::from("./rust/../go/./src");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/home/user/projects/go/src"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_absolute_in_join() {
+        let mut base = PathBuf::from("/home/user");
+        let join_path = PathBuf::from("/etc/config");
+
+        canonicalize_path(&mut base, &join_path);
+
+        // RootDir component is ignored, so only "etc" and "config" are added
+        assert_eq!(base, PathBuf::from("/home/user/etc/config"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_parent_beyond_root() {
+        let mut base = PathBuf::from("/home");
+        let join_path = PathBuf::from("../../etc");
+
+        canonicalize_path(&mut base, &join_path);
+
+        // After two parent dirs from /home, we're at / then add etc
+        assert_eq!(base, PathBuf::from("/etc"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_empty_join() {
+        let mut base = PathBuf::from("/home/user");
+        let join_path = PathBuf::from("");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/home/user"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_only_current_dir() {
+        let mut base = PathBuf::from("/home/user");
+        let join_path = PathBuf::from(".");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/home/user"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_only_parent_dir() {
+        let mut base = PathBuf::from("/home/user/documents");
+        let join_path = PathBuf::from("..");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/home/user"));
+    }
+
+    #[test]
+    fn test_canonicalize_path_nested_structure() {
+        let mut base = PathBuf::from("/");
+        let join_path = PathBuf::from("a/b/c/../d/./e");
+
+        canonicalize_path(&mut base, &join_path);
+
+        assert_eq!(base, PathBuf::from("/a/b/d/e"));
+    }
+}

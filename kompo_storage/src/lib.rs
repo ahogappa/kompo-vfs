@@ -68,7 +68,6 @@ impl<'a> Fs<'a> {
     pub fn entries(&self) {
         let hoge: Vec<(OsString, &&[u8])> = self.trie.iter().collect();
         dbg!(hoge);
-        ()
     }
 
     fn get_inode_from_path(&self, path: &Vec<&OsStr>) -> u64 {
@@ -79,7 +78,7 @@ impl<'a> Fs<'a> {
     }
 
     fn get_file_type_from_path(&self, search_path: &Vec<&OsStr>) -> Option<FileType<'a>> {
-        if let Some(file) = self.trie.exact_match(&search_path) {
+        if let Some(file) = self.trie.exact_match(search_path) {
             let inode = self.get_inode_from_path(search_path);
 
             return Some(FileType::File {
@@ -94,7 +93,7 @@ impl<'a> Fs<'a> {
 
         let entries: Vec<_> = self
             .trie
-            .predictive_search(&search_path)
+            .predictive_search(search_path)
             .filter_map(|(path, _): (Vec<&OsStr>, _)| {
                 if path.len() >= depth {
                     let id = self.get_inode_from_path(&path);
@@ -116,7 +115,7 @@ impl<'a> Fs<'a> {
             })
             .collect::<Vec<Vec<OsString>>>();
 
-        if entries.len() > 0 {
+        if !entries.is_empty() {
             // dbg!(&search_path);
             let inode = self.get_inode_from_path(search_path);
 
@@ -130,19 +129,15 @@ impl<'a> Fs<'a> {
         self.fd_map.contains_key(&fd)
     }
 
-    pub fn is_dir_exists(&self, dir: &Box<FsDir>) -> bool {
-        if self.is_fd_exists(dir.fd) {
-            true
-        } else {
-            false
-        }
+    pub fn is_dir_exists(&self, dir: &FsDir) -> bool {
+        self.is_fd_exists(dir.fd)
     }
 
     pub fn is_dir_exists_from_path(&self, path: &Vec<&OsStr>) -> bool {
-        match self.get_file_type_from_path(path) {
-            Some(FileType::Directory { .. }) => true,
-            _ => false,
-        }
+        matches!(
+            self.get_file_type_from_path(path),
+            Some(FileType::Directory { .. })
+        )
     }
 
     fn get_stat_from_file_type(&self, file_type: &FileType) -> libc::stat {
@@ -258,26 +253,24 @@ impl<'a> Fs<'a> {
         0
     }
 
-    pub fn stat(&self, path: &Vec<&OsStr>, stat: *mut libc::stat) -> Option<i32> {
+    pub fn stat(&self, path: &Vec<&OsStr>, stat_buf: &mut libc::stat) -> Option<i32> {
         match self.get_file_type_from_path(path) {
-            Some(ref file_type) => {
-                unsafe { *stat = self.get_stat_from_file_type(file_type) };
-
+            Some(file_type) => {
+                *stat_buf = self.get_stat_from_file_type(&file_type);
                 Some(0)
             }
             None => None,
         }
     }
 
-    pub fn lstat(&self, path: &Vec<&OsStr>, stat: *mut libc::stat) -> Option<i32> {
-        self.stat(path, stat)
+    pub fn lstat(&self, path: &Vec<&OsStr>, stat_buf: &mut libc::stat) -> Option<i32> {
+        self.stat(path, stat_buf)
     }
 
-    pub fn fstat(&self, fd: i32, stat: *mut libc::stat) -> Option<i32> {
+    pub fn fstat(&self, fd: i32, stat_buf: &mut libc::stat) -> Option<i32> {
         match self.fd_map.get(&fd) {
             Some(file_type) => {
-                unsafe { *stat = self.get_stat_from_file_type(file_type) };
-
+                *stat_buf = self.get_stat_from_file_type(file_type);
                 Some(0)
             }
             None => None,
@@ -287,7 +280,7 @@ impl<'a> Fs<'a> {
     pub fn file_read(&self, path: &Vec<&OsStr>) -> Option<*const u8> {
         let file_type = self
             .get_file_type_from_path(path)
-            .expect(format!("not found path: {:?}", path).as_str());
+            .unwrap_or_else(|| panic!("not found path: {:?}", path));
 
         match file_type {
             FileType::File { file, .. } => Some(file.as_ptr()),
@@ -327,7 +320,7 @@ impl<'a> Fs<'a> {
                 dir.offset += 1;
 
                 let dirent = Box::new(dirent);
-                Some(Box::into_raw(dirent) as *mut libc::dirent)
+                Some(Box::into_raw(dirent))
             }
             _ => None,
         }
@@ -337,7 +330,12 @@ impl<'a> Fs<'a> {
     fn create_dirent(inode: u64, file_type: u8, full_path: Vec<&OsStr>) -> libc::dirent {
         let mut buf: DirEntryName = [0; 256];
         let last_path = full_path.last().unwrap();
-        buf[..last_path.len()].copy_from_slice(&last_path.as_bytes());
+        let convert_path: Vec<_> = last_path
+            .as_bytes()
+            .iter()
+            .map(|b| convert_byte(*b))
+            .collect();
+        buf[..last_path.len()].copy_from_slice(&convert_path);
 
         libc::dirent {
             d_ino: inode,
@@ -397,6 +395,161 @@ impl<'a> Drop for Fs<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn create_test_fs() -> Fs<'static> {
+        let mut builder: TrieBuilder<&OsStr, &[u8]> = TrieBuilder::new();
+        let ls = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+        let cat = vec!["usr", "bin", "cat"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+        let hoge = vec!["usr", "bin", "hoge", "fuga"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+        let fuga = vec!["usr", "bin", "fuga"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+        let empty = vec!["usr", "empty"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        builder.push(&ls, b"ls_content");
+        builder.push(&cat, b"cat_content_here");
+        builder.push(&hoge, b"hoge_fuga_content");
+        builder.push(&fuga, b"fuga_content");
+        builder.push(&empty, b"");
+
+        Fs::new(builder)
+    }
+
+    #[test]
+    fn test_open_existing_file() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path);
+        assert!(fd.is_some());
+        assert!(fd.unwrap() >= 0);
+    }
+
+    #[test]
+    fn test_open_nonexistent_file() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "nonexistent"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path);
+        assert!(fd.is_none());
+    }
+
+    #[test]
+    fn test_read_file() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path).unwrap();
+        let mut buf = [0u8; 128];
+        let read_size = fs.read(fd, &mut buf);
+
+        assert!(read_size.is_some());
+        assert_eq!(read_size.unwrap(), 10);
+        assert_eq!(&buf[..10], b"ls_content");
+    }
+
+    #[test]
+    fn test_read_partial() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "cat"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path).unwrap();
+
+        // Read in small chunks
+        let mut buf = [0u8; 4];
+        let read_size = fs.read(fd, &mut buf).unwrap();
+        assert_eq!(read_size, 4);
+        assert_eq!(&buf, b"cat_");
+
+        let read_size = fs.read(fd, &mut buf).unwrap();
+        assert_eq!(read_size, 4);
+        assert_eq!(&buf, b"cont");
+    }
+
+    #[test]
+    fn test_read_empty_file() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "empty"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path).unwrap();
+        let mut buf = [0u8; 128];
+        let read_size = fs.read(fd, &mut buf);
+
+        assert!(read_size.is_some());
+        assert_eq!(read_size.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_read_eof() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path).unwrap();
+        let mut buf = [0u8; 128];
+
+        // First read
+        fs.read(fd, &mut buf);
+
+        // Second read should return 0 (EOF)
+        let read_size = fs.read(fd, &mut buf).unwrap();
+        assert_eq!(read_size, 0);
+    }
+
+    #[test]
+    fn test_read_invalid_fd() {
+        let mut fs = create_test_fs();
+        let mut buf = [0u8; 128];
+
+        let result = fs.read(9999, &mut buf);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_close() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path).unwrap();
+        assert!(fs.is_fd_exists(fd));
+
+        let result = fs.close(fd);
+        assert_eq!(result, 0);
+        assert!(!fs.is_fd_exists(fd));
+    }
 
     #[test]
     fn test_storage() {
@@ -458,6 +611,10 @@ mod test {
                         .into_iter()
                         .map(OsString::from)
                         .collect(),
+                    vec!["usr", "bin", "hoge"]
+                        .into_iter()
+                        .map(OsString::from)
+                        .collect(),
                     vec!["usr", "bin", "ls"]
                         .into_iter()
                         .map(OsString::from)
@@ -485,5 +642,380 @@ mod test {
                 inode: hasher.finish()
             })
         );
+    }
+
+    #[test]
+    fn test_stat_file() {
+        let fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let result = fs.stat(&path, &mut stat);
+
+        assert_eq!(result, Some(0));
+        assert_eq!(stat.st_size, 10); // "ls_content" = 10 bytes
+        assert_eq!(stat.st_mode & libc::S_IFMT, libc::S_IFREG);
+    }
+
+    #[test]
+    fn test_stat_directory() {
+        let fs = create_test_fs();
+        let path = vec!["usr", "bin"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let result = fs.stat(&path, &mut stat);
+
+        assert_eq!(result, Some(0));
+        assert_eq!(stat.st_mode & libc::S_IFMT, libc::S_IFDIR);
+    }
+
+    #[test]
+    fn test_stat_nonexistent() {
+        let fs = create_test_fs();
+        let path = vec!["nonexistent"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let result = fs.stat(&path, &mut stat);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_fstat() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "cat"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path).unwrap();
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let result = fs.fstat(fd, &mut stat);
+
+        assert_eq!(result, Some(0));
+        assert_eq!(stat.st_size, 16); // "cat_content_here" = 16 bytes
+    }
+
+    #[test]
+    fn test_fstat_invalid_fd() {
+        let fs = create_test_fs();
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let result = fs.fstat(9999, &mut stat);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_lstat() {
+        let fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let result = fs.lstat(&path, &mut stat);
+
+        assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn test_opendir() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let dir = fs.opendir(&path);
+        assert!(dir.is_some());
+
+        let dir = dir.unwrap();
+        assert!(dir.fd >= 0);
+    }
+
+    #[test]
+    fn test_opendir_file_fails() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let dir = fs.opendir(&path);
+        assert!(dir.is_none());
+    }
+
+    #[test]
+    fn test_opendir_nonexistent() {
+        let mut fs = create_test_fs();
+        let path = vec!["nonexistent"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let dir = fs.opendir(&path);
+        assert!(dir.is_none());
+    }
+
+    #[test]
+    fn test_readdir() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let mut dir = fs.opendir(&path).unwrap();
+
+        // Read directory entries
+        let mut entries = Vec::new();
+        loop {
+            let dirent = fs.readdir(&mut dir);
+            assert!(dirent.is_some());
+
+            let dirent_ptr = dirent.unwrap();
+            if dirent_ptr.is_null() {
+                break;
+            }
+
+            let dirent = unsafe { &*dirent_ptr };
+            let name_bytes: Vec<u8> = dirent
+                .d_name
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c as u8)
+                .collect();
+            let name = String::from_utf8_lossy(&name_bytes).to_string();
+            entries.push(name);
+
+            // Free the dirent
+            unsafe { drop(Box::from_raw(dirent_ptr)) };
+        }
+
+        assert!(entries.contains(&"cat".to_string()));
+        assert!(entries.contains(&"ls".to_string()));
+        assert!(entries.contains(&"fuga".to_string()));
+    }
+
+    #[test]
+    fn test_closedir() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let dir = fs.opendir(&path).unwrap();
+        let fd = dir.fd;
+
+        assert!(fs.is_fd_exists(fd));
+
+        let result = fs.closedir(&dir);
+        assert_eq!(result, 0);
+        assert!(!fs.is_fd_exists(fd));
+    }
+
+    #[test]
+    fn test_rewinddir() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let mut dir = fs.opendir(&path).unwrap();
+
+        // Read first entry
+        let first_entry = fs.readdir(&mut dir).unwrap();
+        assert!(!first_entry.is_null());
+        let first_name: Vec<u8> = unsafe { &*first_entry }
+            .d_name
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8)
+            .collect();
+        unsafe { drop(Box::from_raw(first_entry)) };
+
+        // Read second entry
+        let _ = fs.readdir(&mut dir);
+
+        // Rewind
+        fs.rewinddir(&mut dir);
+
+        // Read first entry again
+        let first_again = fs.readdir(&mut dir).unwrap();
+        assert!(!first_again.is_null());
+        let first_again_name: Vec<u8> = unsafe { &*first_again }
+            .d_name
+            .iter()
+            .take_while(|&&c| c != 0)
+            .map(|&c| c as u8)
+            .collect();
+        unsafe { drop(Box::from_raw(first_again)) };
+
+        assert_eq!(first_name, first_again_name);
+    }
+
+    #[test]
+    fn test_fdopendir() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path).unwrap();
+        let dir = fs.fdopendir(fd);
+
+        assert!(dir.is_some());
+        let dir = dir.unwrap();
+        assert_eq!(dir.fd, fd);
+    }
+
+    #[test]
+    fn test_fdopendir_file_fails() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open(&path).unwrap();
+        let dir = fs.fdopendir(fd);
+
+        assert!(dir.is_none());
+    }
+
+    #[test]
+    fn test_is_fd_exists() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        assert!(!fs.is_fd_exists(9999));
+
+        let fd = fs.open(&path).unwrap();
+        assert!(fs.is_fd_exists(fd));
+
+        fs.close(fd);
+        assert!(!fs.is_fd_exists(fd));
+    }
+
+    #[test]
+    fn test_is_dir_exists() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let dir = fs.opendir(&path).unwrap();
+
+        assert!(fs.is_dir_exists(&dir));
+    }
+
+    #[test]
+    fn test_is_dir_exists_from_path() {
+        let fs = create_test_fs();
+
+        let dir_path = vec!["usr", "bin"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+        assert!(fs.is_dir_exists_from_path(&dir_path));
+
+        let file_path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+        assert!(!fs.is_dir_exists_from_path(&file_path));
+
+        let nonexistent = vec!["nonexistent"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+        assert!(!fs.is_dir_exists_from_path(&nonexistent));
+    }
+
+    #[test]
+    fn test_file_read() {
+        let fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let ptr = fs.file_read(&path);
+        assert!(ptr.is_some());
+
+        let ptr = ptr.unwrap();
+        let content = unsafe { std::slice::from_raw_parts(ptr, 10) };
+        assert_eq!(content, b"ls_content");
+    }
+
+    #[test]
+    fn test_open_at() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd = fs.open_at(&path);
+        assert!(fd.is_some());
+
+        let fd = fd.unwrap();
+        assert!(fs.is_fd_exists(fd));
+    }
+
+    #[test]
+    fn test_multiple_opens() {
+        let mut fs = create_test_fs();
+        let path = vec!["usr", "bin", "ls"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        let fd1 = fs.open(&path).unwrap();
+        let fd2 = fs.open(&path).unwrap();
+
+        assert_ne!(fd1, fd2);
+        assert!(fs.is_fd_exists(fd1));
+        assert!(fs.is_fd_exists(fd2));
+
+        fs.close(fd1);
+        assert!(!fs.is_fd_exists(fd1));
+        assert!(fs.is_fd_exists(fd2));
+    }
+
+    #[test]
+    fn test_nested_directory() {
+        let fs = create_test_fs();
+        let path = vec!["usr", "bin", "hoge"]
+            .into_iter()
+            .map(OsStr::new)
+            .collect::<Vec<_>>();
+
+        assert!(fs.is_dir_exists_from_path(&path));
+    }
+
+    #[test]
+    fn test_root_directory() {
+        let fs = create_test_fs();
+        let path = vec!["usr"].into_iter().map(OsStr::new).collect::<Vec<_>>();
+
+        assert!(fs.is_dir_exists_from_path(&path));
     }
 }

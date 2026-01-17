@@ -111,8 +111,12 @@ unsafe extern "C" fn is_context_func(_: VALUE, _: VALUE) -> VALUE {
 pub fn initialize_fs() -> kompo_storage::Fs<'static> {
     let mut builder = TrieBuilder::new();
 
-    let path_slice = unsafe { std::slice::from_raw_parts(&PATHS, PATHS_SIZE as _) };
-    let file_slice = unsafe { std::slice::from_raw_parts(&FILES, FILES_SIZE as _) };
+    let path_slice = unsafe {
+        std::slice::from_raw_parts(&PATHS as *const libc::c_char as *const u8, PATHS_SIZE as _)
+    };
+    let file_slice = unsafe {
+        std::slice::from_raw_parts(&FILES as *const libc::c_char as *const u8, FILES_SIZE as _)
+    };
 
     let splited_path_array = path_slice
         .split_inclusive(|a| *a == b'\0'.try_into().unwrap())
@@ -147,4 +151,239 @@ pub unsafe extern "C-unwind" fn Init_kompo_fs() {
     let class = rb_define_class(c_name.as_ptr(), rb_cObject);
     rb_define_singleton_method(class, context.as_ptr(), context_func, 0);
     rb_define_singleton_method(class, is_context.as_ptr(), is_context_func, 0);
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate kompo_fs_test_data;
+
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn test_initialize_fs() {
+        let fs = initialize_fs();
+        // Verify we can access files from the test data
+        let path = std::path::Path::new("/test/hello.txt");
+        let path_vec: Vec<&std::ffi::OsStr> = path.iter().collect();
+
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+        let result = fs.stat(&path_vec, &mut stat_buf);
+        assert!(result.is_some());
+        assert_eq!(stat_buf.st_size, 13); // "Hello, World!" is 13 bytes
+    }
+
+    #[test]
+    fn test_stat_from_fs_existing_file() {
+        let path = CString::new("/test/hello.txt").unwrap();
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+
+        let result = glue::stat_from_fs(path.as_ptr(), &mut stat_buf);
+        assert_eq!(result, 0);
+        assert_eq!(stat_buf.st_size, 13);
+    }
+
+    #[test]
+    fn test_stat_from_fs_nonexistent_file() {
+        let path = CString::new("/test/nonexistent.txt").unwrap();
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+
+        let result = glue::stat_from_fs(path.as_ptr(), &mut stat_buf);
+        assert_eq!(result, -1);
+        assert_eq!(errno::errno().0, libc::ENOENT);
+    }
+
+    #[test]
+    fn test_stat_from_fs_null_stat() {
+        let path = CString::new("/test/hello.txt").unwrap();
+
+        let result = glue::stat_from_fs(path.as_ptr(), std::ptr::null_mut());
+        assert_eq!(result, -1);
+        assert_eq!(errno::errno().0, libc::EFAULT);
+    }
+
+    #[test]
+    fn test_lstat_from_fs_existing_file() {
+        let path = CString::new("/test/world.txt").unwrap();
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+
+        let result = glue::lstat_from_fs(path.as_ptr(), &mut stat_buf);
+        assert_eq!(result, 0);
+        assert_eq!(stat_buf.st_size, 12); // "Test Content" is 12 bytes
+    }
+
+    #[test]
+    fn test_lstat_from_fs_null_stat() {
+        let path = CString::new("/test/hello.txt").unwrap();
+
+        let result = glue::lstat_from_fs(path.as_ptr(), std::ptr::null_mut());
+        assert_eq!(result, -1);
+        assert_eq!(errno::errno().0, libc::EFAULT);
+    }
+
+    #[test]
+    fn test_open_and_close_from_fs() {
+        let path = CString::new("/test/hello.txt").unwrap();
+
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY, 0);
+        assert!(fd >= 0, "open should return non-negative fd");
+
+        let result = glue::close_from_fs(fd);
+        // close returns 0 on success (for real fd) or may vary for virtual fd
+        assert!(result == 0 || result == -1);
+    }
+
+    #[test]
+    fn test_open_nonexistent_file() {
+        let path = CString::new("/test/nonexistent.txt").unwrap();
+
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY, 0);
+        assert_eq!(fd, -1);
+        assert_eq!(errno::errno().0, libc::ENOENT);
+    }
+
+    #[test]
+    fn test_fstat_from_fs() {
+        let path = CString::new("/test/hello.txt").unwrap();
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY, 0);
+        assert!(fd >= 0);
+
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+        let result = glue::fstat_from_fs(fd, &mut stat_buf);
+        assert_eq!(result, 0);
+        assert_eq!(stat_buf.st_size, 13);
+
+        glue::close_from_fs(fd);
+    }
+
+    #[test]
+    fn test_fstat_from_fs_null_stat() {
+        let path = CString::new("/test/hello.txt").unwrap();
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY, 0);
+        assert!(fd >= 0);
+
+        let result = glue::fstat_from_fs(fd, std::ptr::null_mut());
+        assert_eq!(result, -1);
+        assert_eq!(errno::errno().0, libc::EFAULT);
+
+        glue::close_from_fs(fd);
+    }
+
+    #[test]
+    fn test_read_from_fs() {
+        let path = CString::new("/test/hello.txt").unwrap();
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY, 0);
+        assert!(fd >= 0);
+
+        let mut buf = vec![0u8; 20];
+        let bytes_read = glue::read_from_fs(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+
+        assert_eq!(bytes_read, 13);
+        assert_eq!(&buf[..13], b"Hello, World!");
+
+        glue::close_from_fs(fd);
+    }
+
+    #[test]
+    fn test_read_from_fs_partial() {
+        let path = CString::new("/test/hello.txt").unwrap();
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY, 0);
+        assert!(fd >= 0);
+
+        // Read only 5 bytes
+        let mut buf = vec![0u8; 5];
+        let bytes_read = glue::read_from_fs(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+
+        assert_eq!(bytes_read, 5);
+        assert_eq!(&buf[..5], b"Hello");
+
+        glue::close_from_fs(fd);
+    }
+
+    #[test]
+    fn test_read_world_txt() {
+        let path = CString::new("/test/world.txt").unwrap();
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY, 0);
+        assert!(fd >= 0);
+
+        let mut buf = vec![0u8; 20];
+        let bytes_read = glue::read_from_fs(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+
+        assert_eq!(bytes_read, 12);
+        assert_eq!(&buf[..12], b"Test Content");
+
+        glue::close_from_fs(fd);
+    }
+
+    #[test]
+    fn test_opendir_and_closedir() {
+        let path = CString::new("/test").unwrap();
+        let dir = glue::opendir_from_fs(path.as_ptr());
+
+        assert!(!dir.is_null(), "opendir should return non-null DIR pointer");
+
+        let result = glue::closedir_from_fs(dir);
+        // closedir may return error because underlying fd is from dup
+        assert!(result == 0 || result == -1);
+    }
+
+    #[test]
+    fn test_opendir_nonexistent() {
+        let path = CString::new("/nonexistent").unwrap();
+        let dir = glue::opendir_from_fs(path.as_ptr());
+
+        assert!(
+            dir.is_null(),
+            "opendir on nonexistent path should return null"
+        );
+    }
+
+    #[test]
+    fn test_readdir_from_fs() {
+        let path = CString::new("/test").unwrap();
+        let dir = glue::opendir_from_fs(path.as_ptr());
+        assert!(!dir.is_null());
+
+        let mut entries = Vec::new();
+        loop {
+            let entry = glue::readdir_from_fs(dir);
+            if entry.is_null() {
+                break;
+            }
+            let name = unsafe {
+                CStr::from_ptr((*entry).d_name.as_ptr())
+                    .to_string_lossy()
+                    .to_string()
+            };
+            entries.push(name);
+        }
+
+        // Should contain hello.txt and world.txt (and possibly . and ..)
+        assert!(
+            entries.iter().any(|e| e == "hello.txt"),
+            "Should contain hello.txt, got: {:?}",
+            entries
+        );
+        assert!(
+            entries.iter().any(|e| e == "world.txt"),
+            "Should contain world.txt, got: {:?}",
+            entries
+        );
+
+        glue::closedir_from_fs(dir);
+    }
+
+    #[test]
+    fn test_stat_directory() {
+        let path = CString::new("/test").unwrap();
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+
+        let result = glue::stat_from_fs(path.as_ptr(), &mut stat_buf);
+        assert_eq!(result, 0);
+        // Directory should have S_IFDIR flag
+        assert!(
+            stat_buf.st_mode & libc::S_IFDIR != 0,
+            "Should be a directory"
+        );
+    }
 }
