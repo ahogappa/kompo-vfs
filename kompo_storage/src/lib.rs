@@ -59,8 +59,10 @@ impl<'a> Fs<'a> {
     const DEV: libc::dev_t = libc::makedev(2222, 0); // create fake device number. TODO: get unused device number dynamically.
 
     pub fn new(builder: TrieBuilder<&'static OsStr, &'static [u8]>) -> Self {
+        let trie = builder.build();
+
         Self {
-            trie: builder.build(),
+            trie,
             fd_map: HashMap::new(),
         }
     }
@@ -89,24 +91,20 @@ impl<'a> Fs<'a> {
         }
 
         let depth = search_path.len() + 1;
-        let mut uniq_file = HashSet::new();
+        let mut seen_entries = HashSet::new();
 
         let entries: Vec<_> = self
             .trie
             .predictive_search(search_path)
             .filter_map(|(path, _): (Vec<&OsStr>, _)| {
                 if path.len() >= depth {
-                    let id = self.get_inode_from_path(&path);
+                    let next_depth_path: Vec<OsString> =
+                        path.iter().take(depth).map(|&s| s.to_os_string()).collect();
 
-                    if uniq_file.contains(&id) {
+                    if seen_entries.contains(&next_depth_path) {
                         None
                     } else {
-                        uniq_file.insert(id);
-                        let next_depth_path = path
-                            .iter()
-                            .take(depth)
-                            .map(|&s| s.to_os_string())
-                            .collect::<Vec<OsString>>();
+                        seen_entries.insert(next_depth_path.clone());
                         Some(next_depth_path)
                     }
                 } else {
@@ -200,29 +198,19 @@ impl<'a> Fs<'a> {
     }
 
     pub fn open(&mut self, path: &Vec<&OsStr>) -> Option<i32> {
-        match self.get_file_type_from_path(path) {
-            Some(file_type) => {
-                let fd = unsafe { libc::dup(0) };
+        let file_type = self.get_file_type_from_path(path)?;
+        let fd = unsafe { libc::dup(0) };
+        self.fd_map.insert(fd, file_type);
 
-                self.fd_map.insert(fd, file_type);
-
-                Some(fd)
-            }
-            None => None,
-        }
+        Some(fd)
     }
 
     pub fn open_at(&mut self, path: &Vec<&OsStr>) -> Option<i32> {
-        match self.get_file_type_from_path(path) {
-            Some(file_type) => {
-                let fd = unsafe { libc::dup(0) };
+        let file_type = self.get_file_type_from_path(path)?;
+        let fd = unsafe { libc::dup(0) };
+        self.fd_map.insert(fd, file_type);
 
-                self.fd_map.insert(fd, file_type);
-
-                Some(fd)
-            }
-            None => None,
-        }
+        Some(fd)
     }
 
     pub fn read(&mut self, fd: i32, buf: &mut [u8]) -> Option<isize> {
@@ -265,6 +253,65 @@ impl<'a> Fs<'a> {
 
     pub fn lstat(&self, path: &Vec<&OsStr>, stat_buf: &mut libc::stat) -> Option<i32> {
         self.stat(path, stat_buf)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn getattrlist(
+        &self,
+        path: &Vec<&OsStr>,
+        attr_list: &libc::attrlist,
+        attr_buf: *mut libc::c_void,
+        attr_buf_size: usize,
+    ) -> Option<i32> {
+        #[repr(C)]
+        struct AttrBufNameAndObjType {
+            length: u32,
+            name_ref: libc::attrreference_t,
+            obj_type: u32,
+        }
+
+        let file_type = self.get_file_type_from_path(path)?;
+
+        let obj_type: u32 = match file_type {
+            FileType::File { .. } => 1,      // VREG
+            FileType::Directory { .. } => 2, // VDIR
+        };
+
+        let basename = path.last().map(|s| s.as_bytes()).unwrap_or(b"");
+        let basename_len = basename.len() + 1;
+
+        if attr_list.commonattr != (libc::ATTR_CMN_NAME | libc::ATTR_CMN_OBJTYPE) {
+            return None;
+        }
+
+        let header_size = std::mem::size_of::<AttrBufNameAndObjType>();
+        let total_size = header_size + basename_len;
+
+        if total_size > attr_buf_size {
+            return None;
+        }
+
+        let result = AttrBufNameAndObjType {
+            length: total_size as u32,
+            name_ref: libc::attrreference_t {
+                attr_dataoffset: (header_size
+                    - std::mem::offset_of!(AttrBufNameAndObjType, name_ref))
+                    as i32,
+                attr_length: basename_len as u32,
+            },
+            obj_type,
+        };
+
+        unsafe {
+            let buf = attr_buf as *mut AttrBufNameAndObjType;
+            std::ptr::write(buf, result);
+
+            let name_ptr = (attr_buf as *mut u8).add(header_size);
+            std::ptr::copy_nonoverlapping(basename.as_ptr(), name_ptr, basename.len());
+            *name_ptr.add(basename.len()) = 0;
+        }
+
+        Some(0)
     }
 
     pub fn fstat(&self, fd: i32, stat_buf: &mut libc::stat) -> Option<i32> {
