@@ -2,3 +2,7 @@
 
 members = ["kompo_fs", "kompo_storage", "kompo_wrap", "kompo_fs/kompo_fs_test_data"]
 resolver = "2"
+
+[profile.release]
+panic = "abort"
+lto = true

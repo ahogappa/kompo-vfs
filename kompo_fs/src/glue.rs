@@ -535,7 +535,6 @@ pub fn opendir_from_fs(path: *const libc::c_char) -> *mut libc::DIR {
 
     if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
         let expand_path = util::expand_kompo_path(path);
-
         inner_opendir(expand_path)
     } else if util::is_under_kompo_working_dir(path) {
         inner_opendir(path)
@@ -604,10 +603,76 @@ pub unsafe extern "C-unwind" fn realpath_from_fs(
 
 #[no_mangle]
 pub fn mkdir_from_fs(path: *const libc::c_char, mode: libc::mode_t) -> libc::c_int {
-    let layout = std::alloc::Layout::new::<libc::stat>();
-    let stat = unsafe { std::alloc::alloc(layout) as *mut libc::stat };
+    fn inner_mkdir(path: *const libc::c_char) -> libc::c_int {
+        let layout = std::alloc::Layout::new::<libc::stat>();
+        let stat_buf = unsafe { std::alloc::alloc(layout) as *mut libc::stat };
 
-    let ret = stat_from_fs(path, stat);
+        let ret = stat_from_fs(path, stat_buf);
 
-    ret
+        unsafe { std::alloc::dealloc(stat_buf as *mut u8, layout) };
+
+        if ret == 0 {
+            return 0;
+        }
+
+        errno::set_errno(errno::Errno(libc::ENOENT));
+        -1
+    }
+
+    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
+        let expand_path = util::expand_kompo_path(path);
+        inner_mkdir(expand_path)
+    } else if util::is_under_kompo_working_dir(path) {
+        inner_mkdir(path)
+    } else {
+        unsafe { kompo_wrap::MKDIR_HANDLE(path, mode) }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[no_mangle]
+pub fn getattrlist_from_fs(
+    path: *const libc::c_char,
+    attr_list: *mut libc::c_void,
+    attr_buf: *mut libc::c_void,
+    attr_buf_size: libc::size_t,
+    options: libc::c_ulong,
+) -> libc::c_int {
+    fn inner_getattrlist(
+        path: *const libc::c_char,
+        attr_list: *mut libc::c_void,
+        attr_buf: *mut libc::c_void,
+        attr_buf_size: libc::size_t,
+    ) -> libc::c_int {
+        let path_cstr = unsafe { CStr::from_ptr(path) };
+        let path_path = Path::new(path_cstr.to_str().expect("invalid path"));
+        let search_path = path_path.iter().collect::<Vec<_>>();
+
+        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie_guard = trie.lock().unwrap();
+
+        let ret = trie_guard.getattrlist(
+            &search_path,
+            unsafe { &*(attr_list as *const libc::attrlist) },
+            attr_buf,
+            attr_buf_size,
+        );
+
+        match ret {
+            Some(r) => r,
+            None => {
+                errno::set_errno(errno::Errno(libc::ENOENT));
+                -1
+            }
+        }
+    }
+
+    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
+        let expand_path = util::expand_kompo_path(path);
+        inner_getattrlist(expand_path, attr_list, attr_buf, attr_buf_size)
+    } else if util::is_under_kompo_working_dir(path) {
+        inner_getattrlist(path, attr_list, attr_buf, attr_buf_size)
+    } else {
+        unsafe { kompo_wrap::GETATTRLIST_HANDLE(path, attr_list, attr_buf, attr_buf_size, options) }
+    }
 }

@@ -800,3 +800,50 @@ unsafe extern "C-unwind" fn realpath(
 
 //     DLOPEN_HANDLE(filename, flag)
 // }
+
+// getattrlist - macOS only
+#[cfg(target_os = "macos")]
+pub static GETATTRLIST_HANDLE: std::sync::LazyLock<
+    unsafe extern "C-unwind" fn(
+        path: *const libc::c_char,
+        attrList: *mut libc::c_void,
+        attrBuf: *mut libc::c_void,
+        attrBufSize: libc::size_t,
+        options: libc::c_ulong,
+    ) -> libc::c_int,
+> = std::sync::LazyLock::new(|| unsafe {
+    let handle = libc::dlsym(libc::RTLD_NEXT, b"getattrlist\0".as_ptr() as _);
+    std::mem::transmute::<
+        *mut libc::c_void,
+        unsafe extern "C-unwind" fn(
+            path: *const libc::c_char,
+            attrList: *mut libc::c_void,
+            attrBuf: *mut libc::c_void,
+            attrBufSize: libc::size_t,
+            options: libc::c_ulong,
+        ) -> libc::c_int,
+    >(handle)
+});
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn getattrlist_from_fs(
+        path: *const libc::c_char,
+        attrList: *mut libc::c_void,
+        attrBuf: *mut libc::c_void,
+        attrBufSize: libc::size_t,
+        options: libc::c_ulong,
+    ) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+#[no_mangle]
+unsafe extern "C-unwind" fn getattrlist(
+    path: *const libc::c_char,
+    attr_list: *mut libc::c_void,
+    attr_buf: *mut libc::c_void,
+    attr_buf_size: libc::size_t,
+    options: libc::c_ulong,
+) -> libc::c_int {
+    getattrlist_from_fs(path, attr_list, attr_buf, attr_buf_size, options)
+}
