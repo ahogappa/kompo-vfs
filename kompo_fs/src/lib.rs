@@ -153,11 +153,28 @@ pub unsafe extern "C-unwind" fn Init_kompo_fs() {
     rb_define_singleton_method(class, is_context.as_ptr(), is_context_func, 0);
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn kompo_fs_set_entrypoint_dir(entrypoint_path: *const libc::c_char) {
+    if entrypoint_path.is_null() {
+        return;
+    }
+
+    let path_cstr = CStr::from_ptr(entrypoint_path);
+    let path = Path::new(path_cstr.to_str().expect("invalid entrypoint path"));
+
+    if let Some(parent) = path.parent() {
+        let parent_os_str = parent.as_os_str().to_os_string();
+        let cow = std::borrow::Cow::Owned(parent_os_str);
+        WORKING_DIR.replace(Some(cow));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate kompo_fs_test_data;
 
     use super::*;
+    use serial_test::serial;
     use std::ffi::CString;
 
     #[test]
@@ -385,5 +402,59 @@ mod tests {
             stat_buf.st_mode & libc::S_IFDIR != 0,
             "Should be a directory"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn test_kompo_fs_set_entrypoint_dir_with_valid_path() {
+        let path = CString::new("/app/bin/main.rb").unwrap();
+
+        unsafe {
+            // Clear WORKING_DIR before test
+            WORKING_DIR.take();
+
+            kompo_fs_set_entrypoint_dir(path.as_ptr());
+
+            // Verify WORKING_DIR is set to the parent directory
+            let working_dir = WORKING_DIR.take();
+            assert!(working_dir.is_some());
+            let dir_path = working_dir.unwrap();
+            assert_eq!(dir_path.to_str().unwrap(), "/app/bin");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_kompo_fs_set_entrypoint_dir_with_null() {
+        unsafe {
+            // Clear WORKING_DIR before test
+            WORKING_DIR.take();
+
+            // Should not panic when passing null
+            kompo_fs_set_entrypoint_dir(std::ptr::null());
+
+            // Verify WORKING_DIR is still None
+            let working_dir = WORKING_DIR.take();
+            assert!(working_dir.is_none());
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_kompo_fs_set_entrypoint_dir_with_root_path() {
+        let path = CString::new("/main.rb").unwrap();
+
+        unsafe {
+            // Clear WORKING_DIR before test
+            WORKING_DIR.take();
+
+            kompo_fs_set_entrypoint_dir(path.as_ptr());
+
+            // Verify WORKING_DIR is set to root
+            let working_dir = WORKING_DIR.take();
+            assert!(working_dir.is_some());
+            let dir_path = working_dir.unwrap();
+            assert_eq!(dir_path.to_str().unwrap(), "/");
+        }
     }
 }
