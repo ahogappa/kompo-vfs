@@ -153,6 +153,22 @@ pub unsafe extern "C-unwind" fn Init_kompo_fs() {
     rb_define_singleton_method(class, is_context.as_ptr(), is_context_func, 0);
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn kompo_fs_set_entrypoint_dir(entrypoint_path: *const libc::c_char) {
+    if entrypoint_path.is_null() {
+        return;
+    }
+
+    let path_cstr = CStr::from_ptr(entrypoint_path);
+    let path = Path::new(path_cstr.to_str().expect("invalid entrypoint path"));
+
+    if let Some(parent) = path.parent() {
+        let parent_os_str = parent.as_os_str().to_os_string();
+        let cow = std::borrow::Cow::Owned(parent_os_str);
+        WORKING_DIR.replace(Some(cow));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate kompo_fs_test_data;
