@@ -17,6 +17,7 @@ errno = "*"
 
 [dev-dependencies]
 kompo_fs_test_data = { path = "./kompo_fs_test_data" }
+serial_test = "3"
 
 
 [profile.release]
