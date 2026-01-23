@@ -3,20 +3,22 @@ use std::{
     ffi::{CStr, CString},
     hash::{DefaultHasher, Hash, Hasher},
     os::unix::ffi::OsStrExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
 };
 
 use crate::{TRIE, WD, WORKING_DIR};
 
-pub fn is_under_kompo_working_dir(other_path: *const libc::c_char) -> bool {
+/// # Safety
+/// `other_path` must be a valid pointer to a null-terminated C string.
+pub unsafe fn is_under_kompo_working_dir(other_path: *const libc::c_char) -> bool {
     let wd = unsafe { CStr::from_ptr(&WD) };
     let other_path = unsafe { CStr::from_ptr(other_path) };
 
     other_path.to_bytes().starts_with(wd.to_bytes())
 }
 
-pub fn canonicalize_path(base: &mut PathBuf, join_path: &PathBuf) {
+pub fn canonicalize_path(base: &mut PathBuf, join_path: &Path) {
     for comp in join_path.components() {
         match comp {
             std::path::Component::Normal(comp) => {
@@ -36,7 +38,9 @@ pub fn canonicalize_path(base: &mut PathBuf, join_path: &PathBuf) {
     }
 }
 
-pub fn expand_kompo_path(raw_path: *const libc::c_char) -> *const libc::c_char {
+/// # Safety
+/// `raw_path` must be a valid pointer to a null-terminated C string.
+pub unsafe fn expand_kompo_path(raw_path: *const libc::c_char) -> *const libc::c_char {
     let path = unsafe { CStr::from_ptr(raw_path) };
     let path = PathBuf::from_str(path.to_str().expect("invalid path")).expect("invalid path");
 
@@ -49,7 +53,7 @@ pub fn expand_kompo_path(raw_path: *const libc::c_char) -> *const libc::c_char {
         return path as *const libc::c_char;
     }
 
-    let wd = unsafe { WORKING_DIR.clone().take().unwrap().into_owned() };
+    let wd = WORKING_DIR.read().unwrap().clone().unwrap();
     let mut wd = PathBuf::from(wd);
 
     canonicalize_path(&mut wd, &path);
@@ -64,11 +68,18 @@ pub fn expand_kompo_path(raw_path: *const libc::c_char) -> *const libc::c_char {
 
 pub fn current_dir_hash() -> u64 {
     let mut hasher = DefaultHasher::new();
-    unsafe { WORKING_DIR.take().unwrap().hash(&mut hasher) };
+    WORKING_DIR
+        .read()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .hash(&mut hasher);
     hasher.finish()
 }
 
-pub fn is_under_kompo_tmp_dir(other_path: *const libc::c_char) -> bool {
+/// # Safety
+/// `other_path` must be a valid pointer to a null-terminated C string.
+pub unsafe fn is_under_kompo_tmp_dir(other_path: *const libc::c_char) -> bool {
     let mut tmpdir = env::temp_dir();
     tmpdir.push(format!("{}", current_dir_hash()));
     let other_path = unsafe { CStr::from_ptr(other_path) };
@@ -83,7 +94,7 @@ pub fn is_fd_exists_in_kompo(fd: i32) -> bool {
         return false;
     }
 
-    let trie = std::sync::Arc::clone(&TRIE.get().unwrap());
+    let trie = std::sync::Arc::clone(TRIE.get().unwrap());
     {
         let trie = trie.lock().unwrap();
 
@@ -91,14 +102,16 @@ pub fn is_fd_exists_in_kompo(fd: i32) -> bool {
     }
 }
 
-pub fn is_dir_exists_in_kompo(dir: *mut libc::DIR) -> bool {
+/// # Safety
+/// `dir` must be a valid pointer to a `FsDir` that was previously allocated by this crate.
+pub unsafe fn is_dir_exists_in_kompo(dir: *mut libc::DIR) -> bool {
     if TRIE.get().is_none() {
         return false;
     }
 
     let dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
 
-    let trie = std::sync::Arc::clone(&TRIE.get().unwrap());
+    let trie = std::sync::Arc::clone(TRIE.get().unwrap());
     let bool = {
         let trie = trie.lock().unwrap();
 
