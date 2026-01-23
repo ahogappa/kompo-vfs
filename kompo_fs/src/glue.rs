@@ -1,13 +1,12 @@
 use std::{
-    borrow::Cow,
     ffi::{CStr, CString},
     path::{Path, PathBuf},
     str::FromStr,
 };
 
-use crate::{initialize_trie, util, FILE_TYPE_CACHE, TRIE, WORKING_DIR};
+use crate::{FILE_TYPE_CACHE, TRIE, WORKING_DIR, initialize_trie, util};
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn mmap_from_fs(
     addr: *mut libc::c_void,
     length: libc::size_t,
@@ -47,14 +46,14 @@ pub fn mmap_from_fs(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn open_from_fs(path: *const libc::c_char, oflag: libc::c_int, mode: libc::mode_t) -> i32 {
     fn inner_open(path: *const libc::c_char) -> libc::c_int {
         let path = unsafe { CStr::from_ptr(path) };
         let path = Path::new(path.to_str().expect("invalid path"));
         let path = path.iter().collect::<Vec<_>>();
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         let ret = {
             let mut trie = trie.lock().unwrap();
 
@@ -67,18 +66,18 @@ pub fn open_from_fs(path: *const libc::c_char, oflag: libc::c_int, mode: libc::m
         })
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
-        let expand_path = util::expand_kompo_path(path);
+    if WORKING_DIR.read().unwrap().is_some() && unsafe { *path } != b'/'.try_into().unwrap() {
+        let expand_path = unsafe { util::expand_kompo_path(path) };
 
         inner_open(expand_path)
-    } else if util::is_under_kompo_working_dir(path) {
+    } else if unsafe { util::is_under_kompo_working_dir(path) } {
         inner_open(path)
     } else {
         unsafe { kompo_wrap::OPEN_HANDLE(path, oflag, mode) }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe fn openat_from_fs(
     dirfd: libc::c_int,
     pathname: *const libc::c_char,
@@ -86,23 +85,23 @@ pub unsafe fn openat_from_fs(
     mode: libc::mode_t,
 ) -> libc::c_int {
     fn inner_openat(
-        dirfd: libc::c_int,
+        _dirfd: libc::c_int,
         pathname: *const libc::c_char,
-        flags: libc::c_int,
-        mode: libc::mode_t,
+        _flags: libc::c_int,
+        _mode: libc::mode_t,
     ) -> libc::c_int {
         let path = unsafe { CStr::from_ptr(pathname) };
         let path = PathBuf::from_str(path.to_str().expect("invalid path")).unwrap();
 
-        let current_dir = unsafe { WORKING_DIR.borrow() };
+        let current_dir = WORKING_DIR.read().unwrap();
         let current_dir = current_dir.clone().expect("not found current dir");
-        let mut current_dir = PathBuf::from(current_dir.into_owned());
+        let mut current_dir = PathBuf::from(current_dir);
 
         util::canonicalize_path(&mut current_dir, &path);
 
         let path = current_dir.iter().collect::<Vec<_>>();
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         let ret = {
             let mut trie = trie.lock().unwrap();
 
@@ -123,27 +122,27 @@ pub unsafe fn openat_from_fs(
     let is_create_flag = flags & libc::O_CREAT == libc::O_CREAT;
 
     if is_create_flag {
-        return kompo_wrap::OPENAT_HANDLE(dirfd, pathname, flags, mode);
+        return unsafe { kompo_wrap::OPENAT_HANDLE(dirfd, pathname, flags, mode) };
     }
 
-    if util::is_under_kompo_working_dir(pathname) {
+    if unsafe { util::is_under_kompo_working_dir(pathname) } {
         return open_from_fs(pathname, flags, mode);
     }
 
     if dirfd == libc::AT_FDCWD
-        && WORKING_DIR.borrow().is_some()
-        && *pathname != b'/'.try_into().unwrap()
+        && WORKING_DIR.read().unwrap().is_some()
+        && unsafe { *pathname } != b'/'.try_into().unwrap()
     {
         return inner_openat(dirfd, pathname, flags, mode);
     }
 
-    kompo_wrap::OPENAT_HANDLE(dirfd, pathname, flags, mode)
+    unsafe { kompo_wrap::OPENAT_HANDLE(dirfd, pathname, flags, mode) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn close_from_fs(fd: i32) -> i32 {
     if util::is_fd_exists_in_kompo(fd) {
-        std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie))
+        std::sync::Arc::clone(TRIE.get_or_init(initialize_trie))
             .lock()
             .unwrap()
             .close(fd);
@@ -152,7 +151,7 @@ pub fn close_from_fs(fd: i32) -> i32 {
     unsafe { kompo_wrap::CLOSE_HANDLE(fd) } // kompo_fs' inner fd made by dup(). so, close it.
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn stat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
     fn inner_stat(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
         if stat.is_null() {
@@ -168,8 +167,8 @@ pub fn stat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
             .collect::<Vec<_>>();
 
         // TODO: move to trie.stat()
-        if let Some(cache) = unsafe { FILE_TYPE_CACHE.read().unwrap().get(&path) } {
-            unsafe { *stat = cache.clone() };
+        if let Some(cache) = FILE_TYPE_CACHE.read().unwrap().get(&path) {
+            unsafe { *stat = *cache };
             return 0;
         }
 
@@ -178,17 +177,12 @@ pub fn stat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
             .map(|os_str| os_str.as_os_str())
             .collect::<Vec<_>>();
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         {
             let trie = trie.lock().unwrap();
             let ret = trie.stat(&sarch_path, unsafe { &mut *stat });
             if ret.is_some() {
-                unsafe {
-                    FILE_TYPE_CACHE
-                        .write()
-                        .unwrap()
-                        .insert(path, (*stat).clone())
-                };
+                unsafe { FILE_TYPE_CACHE.write().unwrap().insert(path, *stat) };
                 0
             } else {
                 errno::set_errno(errno::Errno(libc::ENOENT));
@@ -197,18 +191,18 @@ pub fn stat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
         }
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
-        let expand_path = util::expand_kompo_path(path);
+    if WORKING_DIR.read().unwrap().is_some() && unsafe { *path } != b'/'.try_into().unwrap() {
+        let expand_path = unsafe { util::expand_kompo_path(path) };
 
         inner_stat(expand_path, stat)
-    } else if util::is_under_kompo_working_dir(path) {
+    } else if unsafe { util::is_under_kompo_working_dir(path) } {
         inner_stat(path, stat)
     } else {
         unsafe { kompo_wrap::STAT_HANDLE(path, stat) }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe fn fstatat_from_fs(
     dirfd: libc::c_int,
     pathname: *const libc::c_char,
@@ -216,10 +210,10 @@ pub unsafe fn fstatat_from_fs(
     flags: libc::c_int,
 ) -> i32 {
     fn inner_fstatat(
-        dirfd: libc::c_int,
+        _dirfd: libc::c_int,
         path: *const libc::c_char,
         stat: *mut libc::stat,
-        flags: libc::c_int,
+        _flags: libc::c_int,
     ) -> i32 {
         if stat.is_null() {
             errno::set_errno(errno::Errno(libc::EFAULT));
@@ -229,15 +223,15 @@ pub unsafe fn fstatat_from_fs(
         let path = unsafe { CStr::from_ptr(path) };
         let path = PathBuf::from_str(path.to_str().expect("invalid path")).expect("invalid path");
 
-        let current_dir = unsafe { WORKING_DIR.borrow() };
+        let current_dir = WORKING_DIR.read().unwrap();
         let current_dir = current_dir.clone().expect("not found current dir");
-        let mut current_dir = PathBuf::from(current_dir.into_owned());
+        let mut current_dir = PathBuf::from(current_dir);
 
         util::canonicalize_path(&mut current_dir, &path);
 
         let sarch_path = current_dir.iter().collect::<Vec<_>>();
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         {
             let trie = trie.lock().unwrap();
             let ret = trie.stat(&sarch_path, unsafe { &mut *stat });
@@ -250,21 +244,21 @@ pub unsafe fn fstatat_from_fs(
         }
     }
 
-    if util::is_under_kompo_working_dir(pathname) {
+    if unsafe { util::is_under_kompo_working_dir(pathname) } {
         return stat_from_fs(pathname, buf);
     }
 
     if dirfd == libc::AT_FDCWD
-        && WORKING_DIR.borrow().is_some()
-        && *pathname != b'/'.try_into().unwrap()
+        && WORKING_DIR.read().unwrap().is_some()
+        && unsafe { *pathname } != b'/'.try_into().unwrap()
     {
         return inner_fstatat(dirfd, pathname, buf, flags);
     }
 
-    kompo_wrap::FSTATAT_HANDLE(dirfd, pathname, buf, flags)
+    unsafe { kompo_wrap::FSTATAT_HANDLE(dirfd, pathname, buf, flags) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
     fn inner_lstat(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
         if stat.is_null() {
@@ -280,8 +274,8 @@ pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
             .collect::<Vec<_>>();
 
         // TODO: move to trie.stat()
-        if let Some(cache) = unsafe { FILE_TYPE_CACHE.read().unwrap().get(&path) } {
-            unsafe { *stat = cache.clone() };
+        if let Some(cache) = FILE_TYPE_CACHE.read().unwrap().get(&path) {
+            unsafe { *stat = *cache };
             return 0;
         }
 
@@ -290,17 +284,12 @@ pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
             .map(|os_str| os_str.as_os_str())
             .collect::<Vec<_>>();
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         {
             let trie = trie.lock().unwrap();
             let ret = trie.lstat(&sarch_path, unsafe { &mut *stat });
             if ret.is_some() {
-                unsafe {
-                    FILE_TYPE_CACHE
-                        .write()
-                        .unwrap()
-                        .insert(path, (*stat).clone())
-                };
+                unsafe { FILE_TYPE_CACHE.write().unwrap().insert(path, *stat) };
                 0
             } else {
                 errno::set_errno(errno::Errno(libc::ENOENT));
@@ -309,18 +298,18 @@ pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
         }
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
-        let expand_path = util::expand_kompo_path(path);
+    if WORKING_DIR.read().unwrap().is_some() && unsafe { *path } != b'/'.try_into().unwrap() {
+        let expand_path = unsafe { util::expand_kompo_path(path) };
 
         inner_lstat(expand_path, stat)
-    } else if util::is_under_kompo_working_dir(path) {
+    } else if unsafe { util::is_under_kompo_working_dir(path) } {
         inner_lstat(path, stat)
     } else {
         unsafe { kompo_wrap::LSTAT_HANDLE(path, stat) }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn fstat_from_fs(fd: i32, stat: *mut libc::stat) -> i32 {
     fn inner_fstat(fd: i32, stat: *mut libc::stat) -> i32 {
         if stat.is_null() {
@@ -328,7 +317,7 @@ pub fn fstat_from_fs(fd: i32, stat: *mut libc::stat) -> i32 {
             return -1;
         }
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         let ret = trie.lock().unwrap().fstat(fd, unsafe { &mut *stat });
 
         if ret.is_some() {
@@ -346,16 +335,16 @@ pub fn fstat_from_fs(fd: i32, stat: *mut libc::stat) -> i32 {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn read_from_fs(fd: i32, buf: *mut libc::c_void, count: libc::size_t) -> isize {
     fn inner_read(fd: i32, buf: *mut libc::c_void, count: libc::size_t) -> isize {
-        let mut buf = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, count as usize) };
+        let buf = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, count) };
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
-        let ret = trie.lock().expect("trie is poisoned").read(fd, &mut buf);
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
+        let ret = trie.lock().expect("trie is poisoned").read(fd, buf);
 
-        if ret.is_some() {
-            ret.unwrap() as isize
+        if let Some(read_bytes) = ret {
+            read_bytes
         } else {
             errno::set_errno(errno::Errno(libc::ENOENT));
             -1
@@ -369,10 +358,10 @@ pub fn read_from_fs(fd: i32, buf: *mut libc::c_void, count: libc::size_t) -> isi
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn getcwd_from_fs(buf: *mut libc::c_char, count: libc::size_t) -> *const libc::c_char {
     fn inner_getcwd(buf: *mut libc::c_char, count: libc::size_t) -> *const libc::c_char {
-        let working_dir = unsafe { WORKING_DIR.borrow() };
+        let working_dir = WORKING_DIR.read().unwrap();
 
         if working_dir.is_none() {
             return std::ptr::null();
@@ -397,32 +386,29 @@ pub fn getcwd_from_fs(buf: *mut libc::c_char, count: libc::size_t) -> *const lib
         }
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } {
+    if WORKING_DIR.read().unwrap().is_some() {
         inner_getcwd(buf, count)
     } else {
         unsafe { kompo_wrap::GETCWD_HANDLE(buf, count) }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn chdir_from_fs(path: *const libc::c_char) -> libc::c_int {
     fn inner_chdir(path: *const libc::c_char) -> libc::c_int {
         let path = unsafe { CStr::from_ptr(path) };
         let path = Path::new(path.to_str().expect("invalid path"));
 
         let search_path = path.iter().collect::<Vec<_>>();
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         let bool = trie
             .lock()
             .expect("trie is poisoned")
             .is_dir_exists_from_path(&search_path);
 
         if bool {
-            unsafe {
-                let changed_path = path.as_os_str().to_os_string();
-                let changed_path = Cow::Owned(changed_path);
-                WORKING_DIR.replace(Some(changed_path));
-            }
+            let changed_path = path.as_os_str().to_os_string();
+            *WORKING_DIR.write().unwrap() = Some(changed_path);
 
             1
         } else {
@@ -430,24 +416,24 @@ pub fn chdir_from_fs(path: *const libc::c_char) -> libc::c_int {
         }
     }
 
-    let change_dir = util::expand_kompo_path(path);
+    let change_dir = unsafe { util::expand_kompo_path(path) };
 
-    if util::is_under_kompo_working_dir(change_dir) {
+    if unsafe { util::is_under_kompo_working_dir(change_dir) } {
         inner_chdir(change_dir)
     } else {
         let ret = unsafe { kompo_wrap::CHDIR_HANDLE(path) };
         if ret == 0 {
-            unsafe { WORKING_DIR.replace(None) };
+            *WORKING_DIR.write().unwrap() = None;
         }
 
         ret
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn fdopendir_from_fs(fd: i32) -> *mut libc::DIR {
     fn inner_fdopendir(fd: i32) -> *mut libc::DIR {
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         {
             let trie = trie.lock().unwrap();
 
@@ -468,12 +454,12 @@ pub fn fdopendir_from_fs(fd: i32) -> *mut libc::DIR {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn readdir_from_fs(dir: *mut libc::DIR) -> *mut libc::dirent {
     fn inner_readdir(dir: *mut libc::DIR) -> *mut libc::dirent {
         let mut dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         {
             let trie = trie.lock().unwrap();
 
@@ -490,18 +476,18 @@ pub fn readdir_from_fs(dir: *mut libc::DIR) -> *mut libc::dirent {
         }
     }
 
-    if util::is_dir_exists_in_kompo(dir) {
+    if unsafe { util::is_dir_exists_in_kompo(dir) } {
         inner_readdir(dir)
     } else {
         unsafe { kompo_wrap::READDIR_HANDLE(dir) }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn closedir_from_fs(dir: *mut libc::DIR) -> i32 {
-    if util::is_dir_exists_in_kompo(dir) {
+    if unsafe { util::is_dir_exists_in_kompo(dir) } {
         let dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
-        std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie))
+        std::sync::Arc::clone(TRIE.get_or_init(initialize_trie))
             .lock()
             .unwrap()
             .closedir(&dir);
@@ -512,14 +498,14 @@ pub fn closedir_from_fs(dir: *mut libc::DIR) -> i32 {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn opendir_from_fs(path: *const libc::c_char) -> *mut libc::DIR {
     fn inner_opendir(path: *const libc::c_char) -> *mut libc::DIR {
         let path = unsafe { CStr::from_ptr(path) };
         let path = Path::new(path.to_str().expect("invalid path"));
         let path = path.iter().collect::<Vec<_>>();
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         {
             let mut trie = trie.lock().unwrap();
 
@@ -533,22 +519,22 @@ pub fn opendir_from_fs(path: *const libc::c_char) -> *mut libc::DIR {
         }
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
-        let expand_path = util::expand_kompo_path(path);
+    if WORKING_DIR.read().unwrap().is_some() && unsafe { *path } != b'/'.try_into().unwrap() {
+        let expand_path = unsafe { util::expand_kompo_path(path) };
         inner_opendir(expand_path)
-    } else if util::is_under_kompo_working_dir(path) {
+    } else if unsafe { util::is_under_kompo_working_dir(path) } {
         inner_opendir(path)
     } else {
         unsafe { kompo_wrap::OPENDIR_HANDLE(path) }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn rewinddir_from_fs(dir: *mut libc::DIR) {
     fn inner_rewinddir(dir: *mut libc::DIR) {
         let mut dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         {
             let mut trie = trie.lock().unwrap();
 
@@ -557,26 +543,24 @@ pub fn rewinddir_from_fs(dir: *mut libc::DIR) {
         }
     }
 
-    if util::is_dir_exists_in_kompo(dir) {
+    if unsafe { util::is_dir_exists_in_kompo(dir) } {
         inner_rewinddir(dir)
     } else {
         unsafe { kompo_wrap::REWINDDIR_HANDLE(dir) }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn realpath_from_fs(
     path: *const libc::c_char,
     resolved_path: *mut libc::c_char,
 ) -> *const libc::c_char {
-    fn inner_realpath(
+    unsafe fn inner_realpath(
         path: *const libc::c_char,
         resolved_path: *mut libc::c_char,
     ) -> *const libc::c_char {
         if resolved_path.is_null() {
-            let expand_path = util::expand_kompo_path(path);
-
-            expand_path
+            unsafe { util::expand_kompo_path(path) }
         } else {
             let expand_path = unsafe { CStr::from_ptr(util::expand_kompo_path(path)) };
             let bytes = expand_path.to_bytes_with_nul();
@@ -592,16 +576,16 @@ pub unsafe extern "C-unwind" fn realpath_from_fs(
         }
     }
 
-    if WORKING_DIR.borrow().is_some() && *path != b'/'.try_into().unwrap() {
-        inner_realpath(path, resolved_path)
-    } else if util::is_under_kompo_working_dir(path) {
-        inner_realpath(path, resolved_path)
+    if (WORKING_DIR.read().unwrap().is_some() && unsafe { *path } != b'/'.try_into().unwrap())
+        || unsafe { util::is_under_kompo_working_dir(path) }
+    {
+        unsafe { inner_realpath(path, resolved_path) }
     } else {
         unsafe { kompo_wrap::REALPATH_HANDLE(path, resolved_path) }
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn mkdir_from_fs(path: *const libc::c_char, mode: libc::mode_t) -> libc::c_int {
     fn inner_mkdir(path: *const libc::c_char) -> libc::c_int {
         let layout = std::alloc::Layout::new::<libc::stat>();
@@ -619,10 +603,10 @@ pub fn mkdir_from_fs(path: *const libc::c_char, mode: libc::mode_t) -> libc::c_i
         -1
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
-        let expand_path = util::expand_kompo_path(path);
+    if WORKING_DIR.read().unwrap().is_some() && unsafe { *path } != b'/'.try_into().unwrap() {
+        let expand_path = unsafe { util::expand_kompo_path(path) };
         inner_mkdir(expand_path)
-    } else if util::is_under_kompo_working_dir(path) {
+    } else if unsafe { util::is_under_kompo_working_dir(path) } {
         inner_mkdir(path)
     } else {
         unsafe { kompo_wrap::MKDIR_HANDLE(path, mode) }
@@ -630,7 +614,7 @@ pub fn mkdir_from_fs(path: *const libc::c_char, mode: libc::mode_t) -> libc::c_i
 }
 
 #[cfg(target_os = "macos")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub fn getattrlist_from_fs(
     path: *const libc::c_char,
     attr_list: *mut libc::c_void,
@@ -648,7 +632,7 @@ pub fn getattrlist_from_fs(
         let path_path = Path::new(path_cstr.to_str().expect("invalid path"));
         let search_path = path_path.iter().collect::<Vec<_>>();
 
-        let trie = std::sync::Arc::clone(&TRIE.get_or_init(initialize_trie));
+        let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
         let trie_guard = trie.lock().unwrap();
 
         let ret = trie_guard.getattrlist(
@@ -667,10 +651,10 @@ pub fn getattrlist_from_fs(
         }
     }
 
-    if unsafe { WORKING_DIR.borrow().is_some() } && unsafe { *path } != b'/'.try_into().unwrap() {
-        let expand_path = util::expand_kompo_path(path);
+    if WORKING_DIR.read().unwrap().is_some() && unsafe { *path } != b'/'.try_into().unwrap() {
+        let expand_path = unsafe { util::expand_kompo_path(path) };
         inner_getattrlist(expand_path, attr_list, attr_buf, attr_buf_size)
-    } else if util::is_under_kompo_working_dir(path) {
+    } else if unsafe { util::is_under_kompo_working_dir(path) } {
         inner_getattrlist(path, attr_list, attr_buf, attr_buf_size)
     } else {
         unsafe { kompo_wrap::GETATTRLIST_HANDLE(path, attr_list, attr_buf, attr_buf_size, options) }

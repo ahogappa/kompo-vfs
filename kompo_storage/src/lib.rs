@@ -1,4 +1,4 @@
-use fxhash::FxHasher;
+use rustc_hash::FxHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -44,8 +44,8 @@ fn convert_byte(b: &u8) -> u8 {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 type DirEntryName = [i8; 256];
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn convert_byte(b: u8) -> i8 {
-    b as i8
+fn convert_byte(b: &u8) -> i8 {
+    *b as i8
 }
 
 #[cfg(target_os = "macos")]
@@ -377,11 +377,7 @@ impl<'a> Fs<'a> {
     fn create_dirent(inode: u64, file_type: u8, full_path: Vec<&OsStr>) -> libc::dirent {
         let mut buf: DirEntryName = [0; 256];
         let last_path = full_path.last().unwrap();
-        let convert_path: Vec<_> = last_path
-            .as_bytes()
-            .iter()
-            .map(|b| convert_byte(*b))
-            .collect();
+        let convert_path: Vec<_> = last_path.as_bytes().iter().map(convert_byte).collect();
         buf[..last_path.len()].copy_from_slice(&convert_path);
 
         libc::dirent {

@@ -9,24 +9,27 @@ use trie_rs::map::TrieBuilder;
 static TRIE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<kompo_storage::Fs>>> =
     std::sync::OnceLock::new();
 
-pub static mut WORKING_DIR: std::cell::RefCell<Option<std::borrow::Cow<'static, std::ffi::OsStr>>> =
-    std::cell::RefCell::new(None);
+pub static WORKING_DIR: std::sync::RwLock<Option<std::ffi::OsString>> =
+    std::sync::RwLock::new(None);
 
-pub static mut THREAD_CONTEXT: std::sync::OnceLock<
+pub static THREAD_CONTEXT: std::sync::OnceLock<
     std::sync::Arc<std::sync::RwLock<std::collections::HashMap<libc::pthread_t, bool>>>,
 > = std::sync::OnceLock::new();
 
-static mut FILE_TYPE_CACHE: std::cell::LazyCell<
+static FILE_TYPE_CACHE: std::sync::LazyLock<
     std::sync::RwLock<std::collections::HashMap<Vec<std::ffi::OsString>, libc::stat>>,
-> = std::cell::LazyCell::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
+> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
 
+#[allow(clippy::upper_case_acronyms)]
 type VALUE = u64;
+
+#[allow(clippy::upper_case_acronyms)]
 enum Ruby {
     FALSE = 0x00,
     NIL = 0x04,
     TRUE = 0x14,
 }
-extern "C" {
+unsafe extern "C" {
     static FILES: libc::c_char;
     static FILES_SIZES: libc::c_ulonglong;
     static FILES_SIZE: libc::c_int;
@@ -59,7 +62,7 @@ fn initialize_trie() -> std::sync::Arc<std::sync::Mutex<kompo_storage::Fs<'stati
 }
 
 unsafe extern "C" fn context_func(_: VALUE, _: VALUE) -> VALUE {
-    rb_need_block();
+    unsafe { rb_need_block() };
 
     let binding = std::sync::Arc::clone(
         THREAD_CONTEXT
@@ -68,7 +71,7 @@ unsafe extern "C" fn context_func(_: VALUE, _: VALUE) -> VALUE {
     );
     {
         let mut binding = binding.write().expect("THREAD_CONTEXT is posioned");
-        binding.insert(libc::pthread_self(), true);
+        binding.insert(unsafe { libc::pthread_self() }, true);
     }
 
     unsafe extern "C" fn close(_: VALUE) -> VALUE {
@@ -79,13 +82,13 @@ unsafe extern "C" fn context_func(_: VALUE, _: VALUE) -> VALUE {
         );
         {
             let mut binding = binding.write().expect("THREAD_CONTEXT is posioned");
-            binding.insert(libc::pthread_self(), false);
+            binding.insert(unsafe { libc::pthread_self() }, false);
         }
 
         Ruby::NIL as VALUE
     }
 
-    return rb_ensure(rb_yield, Ruby::NIL as VALUE, close, Ruby::NIL as VALUE);
+    unsafe { rb_ensure(rb_yield, Ruby::NIL as VALUE, close, Ruby::NIL as VALUE) }
 }
 
 unsafe extern "C" fn is_context_func(_: VALUE, _: VALUE) -> VALUE {
@@ -96,7 +99,8 @@ unsafe extern "C" fn is_context_func(_: VALUE, _: VALUE) -> VALUE {
     );
     {
         let binding = binding.read().expect("THREAD_CONTEXT is posioned");
-        if let Some(bool) = binding.get(&libc::pthread_self()) {
+        let thread_id = unsafe { libc::pthread_self() };
+        if let Some(bool) = binding.get(&thread_id) {
             if *bool {
                 Ruby::TRUE as VALUE
             } else {
@@ -119,7 +123,7 @@ pub fn initialize_fs() -> kompo_storage::Fs<'static> {
     };
 
     let splited_path_array = path_slice
-        .split_inclusive(|a| *a == b'\0'.try_into().unwrap())
+        .split_inclusive(|a| *a == b'\0')
         .collect::<Vec<_>>();
 
     let files_sizes =
@@ -127,15 +131,14 @@ pub fn initialize_fs() -> kompo_storage::Fs<'static> {
 
     for (i, path_byte) in splited_path_array.into_iter().enumerate() {
         let path = Path::new(unsafe {
-            let bytes =
-                std::slice::from_raw_parts(path_byte.as_ptr() as *const u8, path_byte.len());
+            let bytes = std::slice::from_raw_parts(path_byte.as_ptr(), path_byte.len());
             CStr::from_bytes_with_nul_unchecked(bytes).to_str().unwrap()
         });
         let path = path.iter().collect::<Vec<_>>();
 
         let range: Range<usize> = files_sizes[i] as usize..files_sizes[i + 1] as usize;
         let file = &file_slice[range];
-        let file = unsafe { std::slice::from_raw_parts(file.as_ptr() as *const u8, file.len()) };
+        let file = unsafe { std::slice::from_raw_parts(file.as_ptr(), file.len()) };
 
         builder.push(path, file);
     }
@@ -143,29 +146,34 @@ pub fn initialize_fs() -> kompo_storage::Fs<'static> {
     kompo_storage::Fs::new(builder)
 }
 
-#[no_mangle]
+/// # Safety
+/// This function must be called from Ruby's initialization context.
+#[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn Init_kompo_fs() {
-    let c_name = CString::new("Kompo").unwrap();
-    let context = CString::new("context").unwrap();
-    let is_context = CString::new("context?").unwrap();
-    let class = rb_define_class(c_name.as_ptr(), rb_cObject);
-    rb_define_singleton_method(class, context.as_ptr(), context_func, 0);
-    rb_define_singleton_method(class, is_context.as_ptr(), is_context_func, 0);
+    unsafe {
+        let c_name = CString::new("Kompo").unwrap();
+        let context = CString::new("context").unwrap();
+        let is_context = CString::new("context?").unwrap();
+        let class = rb_define_class(c_name.as_ptr(), rb_cObject);
+        rb_define_singleton_method(class, context.as_ptr(), context_func, 0);
+        rb_define_singleton_method(class, is_context.as_ptr(), is_context_func, 0);
+    }
 }
 
-#[no_mangle]
+/// # Safety
+/// `entrypoint_path` must be a valid pointer to a null-terminated C string, or null.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn kompo_fs_set_entrypoint_dir(entrypoint_path: *const libc::c_char) {
     if entrypoint_path.is_null() {
         return;
     }
 
-    let path_cstr = CStr::from_ptr(entrypoint_path);
+    let path_cstr = unsafe { CStr::from_ptr(entrypoint_path) };
     let path = Path::new(path_cstr.to_str().expect("invalid entrypoint path"));
 
     if let Some(parent) = path.parent() {
         let parent_os_str = parent.as_os_str().to_os_string();
-        let cow = std::borrow::Cow::Owned(parent_os_str);
-        WORKING_DIR.replace(Some(cow));
+        *WORKING_DIR.write().unwrap() = Some(parent_os_str);
     }
 }
 
@@ -409,34 +417,34 @@ mod tests {
     fn test_kompo_fs_set_entrypoint_dir_with_valid_path() {
         let path = CString::new("/app/bin/main.rb").unwrap();
 
+        // Clear WORKING_DIR before test
+        WORKING_DIR.write().unwrap().take();
+
         unsafe {
-            // Clear WORKING_DIR before test
-            WORKING_DIR.take();
-
             kompo_fs_set_entrypoint_dir(path.as_ptr());
-
-            // Verify WORKING_DIR is set to the parent directory
-            let working_dir = WORKING_DIR.take();
-            assert!(working_dir.is_some());
-            let dir_path = working_dir.unwrap();
-            assert_eq!(dir_path.to_str().unwrap(), "/app/bin");
         }
+
+        // Verify WORKING_DIR is set to the parent directory
+        let working_dir = WORKING_DIR.write().unwrap().take();
+        assert!(working_dir.is_some());
+        let dir_path = working_dir.unwrap();
+        assert_eq!(dir_path.to_str().unwrap(), "/app/bin");
     }
 
     #[test]
     #[serial]
     fn test_kompo_fs_set_entrypoint_dir_with_null() {
+        // Clear WORKING_DIR before test
+        WORKING_DIR.write().unwrap().take();
+
+        // Should not panic when passing null
         unsafe {
-            // Clear WORKING_DIR before test
-            WORKING_DIR.take();
-
-            // Should not panic when passing null
             kompo_fs_set_entrypoint_dir(std::ptr::null());
-
-            // Verify WORKING_DIR is still None
-            let working_dir = WORKING_DIR.take();
-            assert!(working_dir.is_none());
         }
+
+        // Verify WORKING_DIR is still None
+        let working_dir = WORKING_DIR.write().unwrap().take();
+        assert!(working_dir.is_none());
     }
 
     #[test]
@@ -444,17 +452,17 @@ mod tests {
     fn test_kompo_fs_set_entrypoint_dir_with_root_path() {
         let path = CString::new("/main.rb").unwrap();
 
+        // Clear WORKING_DIR before test
+        WORKING_DIR.write().unwrap().take();
+
         unsafe {
-            // Clear WORKING_DIR before test
-            WORKING_DIR.take();
-
             kompo_fs_set_entrypoint_dir(path.as_ptr());
-
-            // Verify WORKING_DIR is set to root
-            let working_dir = WORKING_DIR.take();
-            assert!(working_dir.is_some());
-            let dir_path = working_dir.unwrap();
-            assert_eq!(dir_path.to_str().unwrap(), "/");
         }
+
+        // Verify WORKING_DIR is set to root
+        let working_dir = WORKING_DIR.write().unwrap().take();
+        assert!(working_dir.is_some());
+        let dir_path = working_dir.unwrap();
+        assert_eq!(dir_path.to_str().unwrap(), "/");
     }
 }
