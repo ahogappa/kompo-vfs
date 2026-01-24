@@ -48,30 +48,55 @@ pub fn mmap_from_fs(
 
 #[unsafe(no_mangle)]
 pub fn open_from_fs(path: *const libc::c_char, oflag: libc::c_int, mode: libc::mode_t) -> i32 {
-    fn inner_open(path: *const libc::c_char) -> libc::c_int {
-        let path = unsafe { CStr::from_ptr(path) };
-        let path = Path::new(path.to_str().expect("invalid path"));
-        let path = path.iter().collect::<Vec<_>>();
+    fn inner_open(path: *const libc::c_char, oflag: libc::c_int) -> libc::c_int {
+        let path_cstr = unsafe { CStr::from_ptr(path) };
+        let path_obj = Path::new(path_cstr.to_str().expect("invalid path"));
+        let path_vec = path_obj.iter().collect::<Vec<_>>();
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        let ret = {
+
+        #[cfg(target_os = "macos")]
+        let o_directory = libc::O_DIRECTORY;
+        #[cfg(target_os = "linux")]
+        let o_directory = libc::O_DIRECTORY;
+
+        if oflag & o_directory == o_directory {
+            let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+            let trie_guard = trie.lock().unwrap();
+            match trie_guard.stat(&path_vec, &mut stat_buf) {
+                Some(_) => {
+                    if stat_buf.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                        drop(trie_guard);
+                        let mut trie = trie.lock().unwrap();
+                        trie.open(&path_vec).unwrap_or_else(|| {
+                            errno::set_errno(errno::Errno(libc::ENOENT));
+                            -1
+                        })
+                    } else {
+                        errno::set_errno(errno::Errno(libc::ENOTDIR));
+                        -1
+                    }
+                }
+                None => {
+                    errno::set_errno(errno::Errno(libc::ENOENT));
+                    -1
+                }
+            }
+        } else {
             let mut trie = trie.lock().unwrap();
-
-            trie.open(&path)
-        };
-
-        ret.unwrap_or_else(|| {
-            errno::set_errno(errno::Errno(libc::ENOENT));
-            -1
-        })
+            trie.open(&path_vec).unwrap_or_else(|| {
+                errno::set_errno(errno::Errno(libc::ENOENT));
+                -1
+            })
+        }
     }
 
     if WORKING_DIR.read().unwrap().is_some() && unsafe { *path } != b'/'.try_into().unwrap() {
         let expand_path = unsafe { util::expand_kompo_path(path) };
 
-        inner_open(expand_path)
+        inner_open(expand_path, oflag)
     } else if unsafe { util::is_under_kompo_working_dir(path) } {
-        inner_open(path)
+        inner_open(path, oflag)
     } else {
         unsafe { kompo_wrap::OPEN_HANDLE(path, oflag, mode) }
     }
@@ -501,8 +526,9 @@ pub fn closedir_from_fs(dir: *mut libc::DIR) -> i32 {
 #[unsafe(no_mangle)]
 pub fn opendir_from_fs(path: *const libc::c_char) -> *mut libc::DIR {
     fn inner_opendir(path: *const libc::c_char) -> *mut libc::DIR {
-        let path = unsafe { CStr::from_ptr(path) };
-        let path = Path::new(path.to_str().expect("invalid path"));
+        let path_cstr = unsafe { CStr::from_ptr(path) };
+        let path_str = path_cstr.to_str().expect("invalid path");
+        let path = Path::new(path_str);
         let path = path.iter().collect::<Vec<_>>();
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
@@ -514,7 +540,9 @@ pub fn opendir_from_fs(path: *const libc::c_char) -> *mut libc::DIR {
                     let dir = Box::new(dir);
                     Box::into_raw(dir) as *mut libc::DIR
                 }
-                None => std::ptr::null_mut(),
+                None => {
+                    std::ptr::null_mut()
+                }
             }
         }
     }
