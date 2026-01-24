@@ -268,6 +268,37 @@ mod tests {
     }
 
     #[test]
+    fn test_open_directory_with_o_directory_flag() {
+        let path = CString::new("/test").unwrap();
+
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY, 0);
+        assert!(fd >= 0, "open with O_DIRECTORY on directory should succeed");
+
+        glue::close_from_fs(fd);
+    }
+
+    #[test]
+    fn test_open_file_with_o_directory_flag() {
+        let path = CString::new("/test/hello.txt").unwrap();
+
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY, 0);
+        assert_eq!(fd, -1, "open with O_DIRECTORY on file should fail");
+        assert_eq!(errno::errno().0, libc::ENOTDIR);
+    }
+
+    #[test]
+    fn test_open_nonexistent_with_o_directory_flag() {
+        let path = CString::new("/test/nonexistent").unwrap();
+
+        let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY, 0);
+        assert_eq!(
+            fd, -1,
+            "open with O_DIRECTORY on nonexistent path should fail"
+        );
+        assert_eq!(errno::errno().0, libc::ENOENT);
+    }
+
+    #[test]
     fn test_fstat_from_fs() {
         let path = CString::new("/test/hello.txt").unwrap();
         let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY, 0);
