@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-01-25
+
+### Added
+- Handle `O_DIRECTORY` flag in `open_from_fs` function [#18](https://github.com/ahogappa/kompo-vfs/pull/18)
+- Add unit tests for `O_DIRECTORY` flag handling [#18](https://github.com/ahogappa/kompo-vfs/pull/18)
+
+### Changed
+- Add `VERSION` file as single source of truth for version management [#17](https://github.com/ahogappa/kompo-vfs/pull/17)
+- Add `bump_version.sh` script to sync versions across files [#17](https://github.com/ahogappa/kompo-vfs/pull/17)
+
 ## [0.5.0] - 2026-01-24
 
 ### Added
