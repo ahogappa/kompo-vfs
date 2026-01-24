@@ -12,6 +12,9 @@ class KompoVfs < Formula
 
     lib.install "target/release/libkompo_fs.a"
     lib.install "target/release/libkompo_wrap.a"
+
+    # Write version file for kompo gem compatibility check
+    (lib/"KOMPO_VFS_VERSION").write version.to_s
   end
 
   test do
