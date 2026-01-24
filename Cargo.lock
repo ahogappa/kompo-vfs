@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "kompo_fs"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "errno",
  "kompo_fs_test_data",
