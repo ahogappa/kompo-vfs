@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-01-24
+
+### Added
+- Enable PIC (Position Independent Code) for x86_64 Linux to support PIE binaries [#15](https://github.com/ahogappa/kompo-vfs/pull/15)
+- Add panic=abort flag and version output for x86_64 Linux [#15](https://github.com/ahogappa/kompo-vfs/pull/15)
+
+### Fixed
+- Remove panic=abort from config.toml to fix test builds [#15](https://github.com/ahogappa/kompo-vfs/pull/15)
+
 ## [0.4.1] - 2026-01-23
 
 ### Changed
