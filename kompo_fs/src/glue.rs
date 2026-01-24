@@ -540,9 +540,7 @@ pub fn opendir_from_fs(path: *const libc::c_char) -> *mut libc::DIR {
                     let dir = Box::new(dir);
                     Box::into_raw(dir) as *mut libc::DIR
                 }
-                None => {
-                    std::ptr::null_mut()
-                }
+                None => std::ptr::null_mut(),
             }
         }
     }

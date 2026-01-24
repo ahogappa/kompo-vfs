@@ -291,7 +291,10 @@ mod tests {
         let path = CString::new("/test/nonexistent").unwrap();
 
         let fd = glue::open_from_fs(path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY, 0);
-        assert_eq!(fd, -1, "open with O_DIRECTORY on nonexistent path should fail");
+        assert_eq!(
+            fd, -1,
+            "open with O_DIRECTORY on nonexistent path should fail"
+        );
         assert_eq!(errno::errno().0, libc::ENOENT);
     }
 
