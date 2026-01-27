@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use kompo_storage::Fs;
 use std::ffi::OsStr;
 use std::hint::black_box;
@@ -19,7 +19,15 @@ fn create_rails_app_fs() -> Fs<'static> {
     let mut builder: TrieBuilder<&OsStr, &[u8]> = TrieBuilder::new();
 
     // App directory structure (typical Rails app: ~200 files)
-    let app_dirs = ["models", "controllers", "views", "helpers", "jobs", "mailers", "channels"];
+    let app_dirs = [
+        "models",
+        "controllers",
+        "views",
+        "helpers",
+        "jobs",
+        "mailers",
+        "channels",
+    ];
     for dir in app_dirs {
         for i in 0..30 {
             let file = format!("{}{}.rb", dir.trim_end_matches('s'), i);
@@ -166,7 +174,8 @@ fn create_rails_app_fs() -> Fs<'static> {
                 for i in 0..20 {
                     let file = format!("{}{}.rb", subdir, i);
                     let file_leaked: &'static str = Box::leak(file.into_boxed_str());
-                    let subdir_leaked: &'static str = Box::leak(subdir.to_string().into_boxed_str());
+                    let subdir_leaked: &'static str =
+                        Box::leak(subdir.to_string().into_boxed_str());
                     let path: Vec<&OsStr> = vec![
                         OsStr::new("vendor"),
                         OsStr::new("bundle"),
@@ -631,13 +640,26 @@ fn bench_concurrent_stat(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(Mutex::new(create_rails_app_fs()));
                 let paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("controllers"), OsStr::new("controller0.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("controllers"),
+                        OsStr::new("controller0.rb"),
+                    ],
                     vec![OsStr::new("config"), OsStr::new("routes.rb")],
                     vec![
-                        OsStr::new("vendor"), OsStr::new("bundle"), OsStr::new("ruby"),
-                        OsStr::new("3.2.0"), OsStr::new("gems"), OsStr::new("rails"),
-                        OsStr::new("lib"), OsStr::new("rails0.rb"),
+                        OsStr::new("vendor"),
+                        OsStr::new("bundle"),
+                        OsStr::new("ruby"),
+                        OsStr::new("3.2.0"),
+                        OsStr::new("gems"),
+                        OsStr::new("rails"),
+                        OsStr::new("lib"),
+                        OsStr::new("rails0.rb"),
                     ],
                 ];
                 let paths = Arc::new(paths);
@@ -679,12 +701,36 @@ fn bench_concurrent_require(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(Mutex::new(create_rails_app_fs()));
                 let paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model1.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model2.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model3.rb")],
-                    vec![OsStr::new("app"), OsStr::new("controllers"), OsStr::new("controller0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("controllers"), OsStr::new("controller1.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model1.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model2.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model3.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("controllers"),
+                        OsStr::new("controller0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("controllers"),
+                        OsStr::new("controller1.rb"),
+                    ],
                     vec![OsStr::new("config"), OsStr::new("routes.rb")],
                     vec![OsStr::new("config"), OsStr::new("application.rb")],
                 ];
@@ -750,11 +796,19 @@ fn bench_concurrent_mixed_workload(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(Mutex::new(create_rails_app_fs()));
                 let stat_paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
                     vec![OsStr::new("config"), OsStr::new("routes.rb")],
                 ];
                 let require_paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("controllers"), OsStr::new("controller0.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("controllers"),
+                        OsStr::new("controller0.rb"),
+                    ],
                     vec![OsStr::new("lib"), OsStr::new("lib0.rb")],
                 ];
                 let stat_paths = Arc::new(stat_paths);
@@ -773,7 +827,8 @@ fn bench_concurrent_mixed_workload(c: &mut Criterion) {
                                     for _ in 0..10 {
                                         let path = &stat_paths[i / 2 % stat_paths.len()];
                                         let fs = fs.lock().unwrap();
-                                        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+                                        let mut stat_buf: libc::stat =
+                                            unsafe { std::mem::zeroed() };
                                         fs.stat(black_box(path), &mut stat_buf);
                                     }
                                 } else {
@@ -878,13 +933,26 @@ fn bench_rwlock_stat(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(Mutex::new(create_rails_app_fs()));
                 let paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("controllers"), OsStr::new("controller0.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("controllers"),
+                        OsStr::new("controller0.rb"),
+                    ],
                     vec![OsStr::new("config"), OsStr::new("routes.rb")],
                     vec![
-                        OsStr::new("vendor"), OsStr::new("bundle"), OsStr::new("ruby"),
-                        OsStr::new("3.2.0"), OsStr::new("gems"), OsStr::new("rails"),
-                        OsStr::new("lib"), OsStr::new("rails0.rb"),
+                        OsStr::new("vendor"),
+                        OsStr::new("bundle"),
+                        OsStr::new("ruby"),
+                        OsStr::new("3.2.0"),
+                        OsStr::new("gems"),
+                        OsStr::new("rails"),
+                        OsStr::new("lib"),
+                        OsStr::new("rails0.rb"),
                     ],
                 ];
                 let paths = Arc::new(paths);
@@ -917,13 +985,26 @@ fn bench_rwlock_stat(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(RwLock::new(create_rails_app_fs()));
                 let paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("controllers"), OsStr::new("controller0.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("controllers"),
+                        OsStr::new("controller0.rb"),
+                    ],
                     vec![OsStr::new("config"), OsStr::new("routes.rb")],
                     vec![
-                        OsStr::new("vendor"), OsStr::new("bundle"), OsStr::new("ruby"),
-                        OsStr::new("3.2.0"), OsStr::new("gems"), OsStr::new("rails"),
-                        OsStr::new("lib"), OsStr::new("rails0.rb"),
+                        OsStr::new("vendor"),
+                        OsStr::new("bundle"),
+                        OsStr::new("ruby"),
+                        OsStr::new("3.2.0"),
+                        OsStr::new("gems"),
+                        OsStr::new("rails"),
+                        OsStr::new("lib"),
+                        OsStr::new("rails0.rb"),
                     ],
                 ];
                 let paths = Arc::new(paths);
@@ -967,10 +1048,26 @@ fn bench_rwlock_require(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(Mutex::new(create_rails_app_fs()));
                 let paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model1.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model2.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model3.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model1.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model2.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model3.rb"),
+                    ],
                 ];
                 let paths = Arc::new(paths);
 
@@ -1026,10 +1123,26 @@ fn bench_rwlock_require(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(RwLock::new(create_rails_app_fs()));
                 let paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model1.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model2.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model3.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model1.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model2.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model3.rb"),
+                    ],
                 ];
                 let paths = Arc::new(paths);
 
@@ -1094,10 +1207,14 @@ fn bench_rwlock_read_heavy(c: &mut Criterion) {
     group.bench_function("mutex", |b| {
         let fs = Arc::new(Mutex::new(create_rails_app_fs()));
         let stat_path: Vec<&'static OsStr> = vec![
-            OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb"),
+            OsStr::new("app"),
+            OsStr::new("models"),
+            OsStr::new("model0.rb"),
         ];
         let require_path: Vec<&'static OsStr> = vec![
-            OsStr::new("app"), OsStr::new("controllers"), OsStr::new("controller0.rb"),
+            OsStr::new("app"),
+            OsStr::new("controllers"),
+            OsStr::new("controller0.rb"),
         ];
         let stat_path = Arc::new(stat_path);
         let require_path = Arc::new(require_path);
@@ -1149,10 +1266,14 @@ fn bench_rwlock_read_heavy(c: &mut Criterion) {
     group.bench_function("rwlock", |b| {
         let fs = Arc::new(RwLock::new(create_rails_app_fs()));
         let stat_path: Vec<&'static OsStr> = vec![
-            OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb"),
+            OsStr::new("app"),
+            OsStr::new("models"),
+            OsStr::new("model0.rb"),
         ];
         let require_path: Vec<&'static OsStr> = vec![
-            OsStr::new("app"), OsStr::new("controllers"), OsStr::new("controller0.rb"),
+            OsStr::new("app"),
+            OsStr::new("controllers"),
+            OsStr::new("controller0.rb"),
         ];
         let stat_path = Arc::new(stat_path);
         let require_path = Arc::new(require_path);
@@ -1217,7 +1338,9 @@ fn bench_internal_rwlock(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(Mutex::new(create_rails_app_fs()));
                 let path: Vec<&'static OsStr> = vec![
-                    OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb"),
+                    OsStr::new("app"),
+                    OsStr::new("models"),
+                    OsStr::new("model0.rb"),
                 ];
                 let path = Arc::new(path);
 
@@ -1251,7 +1374,9 @@ fn bench_internal_rwlock(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(create_rails_app_fs());
                 let path: Vec<&'static OsStr> = vec![
-                    OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb"),
+                    OsStr::new("app"),
+                    OsStr::new("models"),
+                    OsStr::new("model0.rb"),
                 ];
                 let path = Arc::new(path);
 
@@ -1284,10 +1409,26 @@ fn bench_internal_rwlock(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(Mutex::new(create_rails_app_fs()));
                 let paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model1.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model2.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model3.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model1.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model2.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model3.rb"),
+                    ],
                 ];
                 let paths = Arc::new(paths);
 
@@ -1327,10 +1468,26 @@ fn bench_internal_rwlock(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(create_rails_app_fs());
                 let paths: Vec<Vec<&'static OsStr>> = vec![
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model1.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model2.rb")],
-                    vec![OsStr::new("app"), OsStr::new("models"), OsStr::new("model3.rb")],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model0.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model1.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model2.rb"),
+                    ],
+                    vec![
+                        OsStr::new("app"),
+                        OsStr::new("models"),
+                        OsStr::new("model3.rb"),
+                    ],
                 ];
                 let paths = Arc::new(paths);
 
@@ -1379,7 +1536,9 @@ fn bench_rwlock_stat_only(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(Mutex::new(create_rails_app_fs()));
                 let path: Vec<&'static OsStr> = vec![
-                    OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb"),
+                    OsStr::new("app"),
+                    OsStr::new("models"),
+                    OsStr::new("model0.rb"),
                 ];
                 let path = Arc::new(path);
 
@@ -1412,7 +1571,9 @@ fn bench_rwlock_stat_only(c: &mut Criterion) {
             |b, &num_threads| {
                 let fs = Arc::new(RwLock::new(create_rails_app_fs()));
                 let path: Vec<&'static OsStr> = vec![
-                    OsStr::new("app"), OsStr::new("models"), OsStr::new("model0.rb"),
+                    OsStr::new("app"),
+                    OsStr::new("models"),
+                    OsStr::new("model0.rb"),
                 ];
                 let path = Arc::new(path);
 

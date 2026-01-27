@@ -6,8 +6,7 @@ use std::ops::Range;
 use std::path::Path;
 use trie_rs::map::TrieBuilder;
 
-static TRIE: std::sync::OnceLock<std::sync::Arc<kompo_storage::Fs>> =
-    std::sync::OnceLock::new();
+static TRIE: std::sync::OnceLock<std::sync::Arc<kompo_storage::Fs>> = std::sync::OnceLock::new();
 
 pub static WORKING_DIR: std::sync::RwLock<Option<std::ffi::OsString>> =
     std::sync::RwLock::new(None);
