@@ -95,11 +95,7 @@ pub fn is_fd_exists_in_kompo(fd: i32) -> bool {
     }
 
     let trie = std::sync::Arc::clone(TRIE.get().unwrap());
-    {
-        let trie = trie.lock().unwrap();
-
-        trie.is_fd_exists(fd)
-    }
+    trie.is_fd_exists(fd)
 }
 
 /// # Safety
@@ -112,11 +108,7 @@ pub unsafe fn is_dir_exists_in_kompo(dir: *mut libc::DIR) -> bool {
     let dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
 
     let trie = std::sync::Arc::clone(TRIE.get().unwrap());
-    let bool = {
-        let trie = trie.lock().unwrap();
-
-        trie.is_dir_exists(&dir)
-    };
+    let bool = trie.is_dir_exists(&dir);
 
     let _ = Box::into_raw(dir);
     bool

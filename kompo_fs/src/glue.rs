@@ -62,12 +62,9 @@ pub fn open_from_fs(path: *const libc::c_char, oflag: libc::c_int, mode: libc::m
 
         if oflag & o_directory == o_directory {
             let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
-            let trie_guard = trie.lock().unwrap();
-            match trie_guard.stat(&path_vec, &mut stat_buf) {
+            match trie.stat(&path_vec, &mut stat_buf) {
                 Some(_) => {
                     if stat_buf.st_mode & libc::S_IFMT == libc::S_IFDIR {
-                        drop(trie_guard);
-                        let mut trie = trie.lock().unwrap();
                         trie.open(&path_vec).unwrap_or_else(|| {
                             errno::set_errno(errno::Errno(libc::ENOENT));
                             -1
@@ -83,7 +80,6 @@ pub fn open_from_fs(path: *const libc::c_char, oflag: libc::c_int, mode: libc::m
                 }
             }
         } else {
-            let mut trie = trie.lock().unwrap();
             trie.open(&path_vec).unwrap_or_else(|| {
                 errno::set_errno(errno::Errno(libc::ENOENT));
                 -1
@@ -127,13 +123,8 @@ pub unsafe fn openat_from_fs(
         let path = current_dir.iter().collect::<Vec<_>>();
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        let ret = {
-            let mut trie = trie.lock().unwrap();
 
-            trie.open(&path)
-        };
-
-        ret.unwrap_or_else(|| {
+        trie.open(&path).unwrap_or_else(|| {
             errno::set_errno(errno::Errno(libc::ENOENT));
             -1
         })
@@ -167,10 +158,7 @@ pub unsafe fn openat_from_fs(
 #[unsafe(no_mangle)]
 pub fn close_from_fs(fd: i32) -> i32 {
     if util::is_fd_exists_in_kompo(fd) {
-        std::sync::Arc::clone(TRIE.get_or_init(initialize_trie))
-            .lock()
-            .unwrap()
-            .close(fd);
+        std::sync::Arc::clone(TRIE.get_or_init(initialize_trie)).close(fd);
     };
 
     unsafe { kompo_wrap::CLOSE_HANDLE(fd) } // kompo_fs' inner fd made by dup(). so, close it.
@@ -203,16 +191,13 @@ pub fn stat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
             .collect::<Vec<_>>();
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        {
-            let trie = trie.lock().unwrap();
-            let ret = trie.stat(&sarch_path, unsafe { &mut *stat });
-            if ret.is_some() {
-                unsafe { FILE_TYPE_CACHE.write().unwrap().insert(path, *stat) };
-                0
-            } else {
-                errno::set_errno(errno::Errno(libc::ENOENT));
-                -1
-            }
+        let ret = trie.stat(&sarch_path, unsafe { &mut *stat });
+        if ret.is_some() {
+            unsafe { FILE_TYPE_CACHE.write().unwrap().insert(path, *stat) };
+            0
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOENT));
+            -1
         }
     }
 
@@ -257,15 +242,12 @@ pub unsafe fn fstatat_from_fs(
         let sarch_path = current_dir.iter().collect::<Vec<_>>();
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        {
-            let trie = trie.lock().unwrap();
-            let ret = trie.stat(&sarch_path, unsafe { &mut *stat });
-            if ret.is_some() {
-                0
-            } else {
-                errno::set_errno(errno::Errno(libc::ENOENT));
-                -1
-            }
+        let ret = trie.stat(&sarch_path, unsafe { &mut *stat });
+        if ret.is_some() {
+            0
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOENT));
+            -1
         }
     }
 
@@ -310,16 +292,13 @@ pub fn lstat_from_fs(path: *const libc::c_char, stat: *mut libc::stat) -> i32 {
             .collect::<Vec<_>>();
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        {
-            let trie = trie.lock().unwrap();
-            let ret = trie.lstat(&sarch_path, unsafe { &mut *stat });
-            if ret.is_some() {
-                unsafe { FILE_TYPE_CACHE.write().unwrap().insert(path, *stat) };
-                0
-            } else {
-                errno::set_errno(errno::Errno(libc::ENOENT));
-                -1
-            }
+        let ret = trie.lstat(&sarch_path, unsafe { &mut *stat });
+        if ret.is_some() {
+            unsafe { FILE_TYPE_CACHE.write().unwrap().insert(path, *stat) };
+            0
+        } else {
+            errno::set_errno(errno::Errno(libc::ENOENT));
+            -1
         }
     }
 
@@ -343,7 +322,7 @@ pub fn fstat_from_fs(fd: i32, stat: *mut libc::stat) -> i32 {
         }
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        let ret = trie.lock().unwrap().fstat(fd, unsafe { &mut *stat });
+        let ret = trie.fstat(fd, unsafe { &mut *stat });
 
         if ret.is_some() {
             0
@@ -366,7 +345,7 @@ pub fn read_from_fs(fd: i32, buf: *mut libc::c_void, count: libc::size_t) -> isi
         let buf = unsafe { std::slice::from_raw_parts_mut(buf as *mut u8, count) };
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        let ret = trie.lock().expect("trie is poisoned").read(fd, buf);
+        let ret = trie.read(fd, buf);
 
         if let Some(read_bytes) = ret {
             read_bytes
@@ -426,10 +405,7 @@ pub fn chdir_from_fs(path: *const libc::c_char) -> libc::c_int {
 
         let search_path = path.iter().collect::<Vec<_>>();
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        let bool = trie
-            .lock()
-            .expect("trie is poisoned")
-            .is_dir_exists_from_path(&search_path);
+        let bool = trie.is_dir_exists_from_path(&search_path);
 
         if bool {
             let changed_path = path.as_os_str().to_os_string();
@@ -459,16 +435,12 @@ pub fn chdir_from_fs(path: *const libc::c_char) -> libc::c_int {
 pub fn fdopendir_from_fs(fd: i32) -> *mut libc::DIR {
     fn inner_fdopendir(fd: i32) -> *mut libc::DIR {
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        {
-            let trie = trie.lock().unwrap();
-
-            match trie.fdopendir(fd) {
-                Some(dir) => {
-                    let dir = Box::new(dir);
-                    Box::into_raw(dir) as *mut libc::DIR
-                }
-                None => std::ptr::null_mut(),
+        match trie.fdopendir(fd) {
+            Some(dir) => {
+                let dir = Box::new(dir);
+                Box::into_raw(dir) as *mut libc::DIR
             }
+            None => std::ptr::null_mut(),
         }
     }
 
@@ -485,18 +457,14 @@ pub fn readdir_from_fs(dir: *mut libc::DIR) -> *mut libc::dirent {
         let mut dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        {
-            let trie = trie.lock().unwrap();
-
-            match trie.readdir(&mut dir) {
-                Some(dirent) => {
-                    let _ = Box::into_raw(dir);
-                    dirent
-                }
-                None => {
-                    let _ = Box::into_raw(dir);
-                    std::ptr::null_mut()
-                }
+        match trie.readdir(&mut dir) {
+            Some(dirent) => {
+                let _ = Box::into_raw(dir);
+                dirent
+            }
+            None => {
+                let _ = Box::into_raw(dir);
+                std::ptr::null_mut()
             }
         }
     }
@@ -512,10 +480,7 @@ pub fn readdir_from_fs(dir: *mut libc::DIR) -> *mut libc::dirent {
 pub fn closedir_from_fs(dir: *mut libc::DIR) -> i32 {
     if unsafe { util::is_dir_exists_in_kompo(dir) } {
         let dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
-        std::sync::Arc::clone(TRIE.get_or_init(initialize_trie))
-            .lock()
-            .unwrap()
-            .closedir(&dir);
+        std::sync::Arc::clone(TRIE.get_or_init(initialize_trie)).closedir(&dir);
 
         unsafe { kompo_wrap::CLOSE_HANDLE(dir.fd) }
     } else {
@@ -532,16 +497,12 @@ pub fn opendir_from_fs(path: *const libc::c_char) -> *mut libc::DIR {
         let path = path.iter().collect::<Vec<_>>();
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        {
-            let mut trie = trie.lock().unwrap();
-
-            match trie.opendir(&path) {
-                Some(dir) => {
-                    let dir = Box::new(dir);
-                    Box::into_raw(dir) as *mut libc::DIR
-                }
-                None => std::ptr::null_mut(),
+        match trie.opendir(&path) {
+            Some(dir) => {
+                let dir = Box::new(dir);
+                Box::into_raw(dir) as *mut libc::DIR
             }
+            None => std::ptr::null_mut(),
         }
     }
 
@@ -561,12 +522,8 @@ pub fn rewinddir_from_fs(dir: *mut libc::DIR) {
         let mut dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        {
-            let mut trie = trie.lock().unwrap();
-
-            trie.rewinddir(&mut dir);
-            let _ = Box::into_raw(dir);
-        }
+        trie.rewinddir(&mut dir);
+        let _ = Box::into_raw(dir);
     }
 
     if unsafe { util::is_dir_exists_in_kompo(dir) } {
@@ -659,9 +616,8 @@ pub fn getattrlist_from_fs(
         let search_path = path_path.iter().collect::<Vec<_>>();
 
         let trie = std::sync::Arc::clone(TRIE.get_or_init(initialize_trie));
-        let trie_guard = trie.lock().unwrap();
 
-        let ret = trie_guard.getattrlist(
+        let ret = trie.getattrlist(
             &search_path,
             unsafe { &*(attr_list as *const libc::attrlist) },
             attr_buf,

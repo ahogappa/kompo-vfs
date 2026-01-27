@@ -6,8 +6,7 @@ use std::ops::Range;
 use std::path::Path;
 use trie_rs::map::TrieBuilder;
 
-static TRIE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<kompo_storage::Fs>>> =
-    std::sync::OnceLock::new();
+static TRIE: std::sync::OnceLock<std::sync::Arc<kompo_storage::Fs>> = std::sync::OnceLock::new();
 
 pub static WORKING_DIR: std::sync::RwLock<Option<std::ffi::OsString>> =
     std::sync::RwLock::new(None);
@@ -57,8 +56,8 @@ unsafe extern "C" {
     fn rb_yield(v: VALUE) -> VALUE;
 }
 
-fn initialize_trie() -> std::sync::Arc<std::sync::Mutex<kompo_storage::Fs<'static>>> {
-    std::sync::Arc::new(std::sync::Mutex::new(initialize_fs()))
+fn initialize_trie() -> std::sync::Arc<kompo_storage::Fs<'static>> {
+    std::sync::Arc::new(initialize_fs())
 }
 
 unsafe extern "C" fn context_func(_: VALUE, _: VALUE) -> VALUE {
