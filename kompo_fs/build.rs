@@ -19,4 +19,10 @@ fn main() {
 
     // Rerun if Cargo.toml changes
     println!("cargo:rerun-if-changed=Cargo.toml");
+
+    // Link zlib for compression support
+    // On macOS, zlib is available as a system library
+    // On Linux, it's typically available as libz
+    // In the final binary, this will use Ruby's statically linked zlib
+    println!("cargo:rustc-link-lib=z");
 }
