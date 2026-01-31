@@ -30,12 +30,38 @@ enum Ruby {
     TRUE = 0x14,
 }
 unsafe extern "C" {
+    // File data symbols (used when compression is disabled)
     static FILES: libc::c_char;
     static FILES_SIZES: libc::c_ulonglong;
     static FILES_SIZE: libc::c_int;
     static PATHS: libc::c_char;
     static PATHS_SIZE: libc::c_int;
     static WD: libc::c_char;
+
+    // Compression support symbols (linked at build time, may appear unused to rustc)
+    #[allow(dead_code)]
+    static COMPRESSION_ENABLED: libc::c_int;
+    #[allow(dead_code)]
+    static COMPRESSED_FILES: libc::c_char;
+    #[allow(dead_code)]
+    static COMPRESSED_FILES_SIZE: libc::c_int;
+    #[allow(dead_code)]
+    static COMPRESSED_SIZES: libc::c_ulonglong;
+    #[allow(dead_code)]
+    static mut FILES_BUFFER: libc::c_char;
+    #[allow(dead_code)]
+    static FILES_BUFFER_SIZE: libc::c_int;
+    #[allow(dead_code)]
+    static ORIGINAL_SIZES: libc::c_ulonglong;
+
+    // zlib uncompress function (linked via Ruby's zlib)
+    #[allow(dead_code)]
+    fn uncompress(
+        dest: *mut u8,
+        dest_len: *mut libc::c_ulong,
+        source: *const u8,
+        source_len: libc::c_ulong,
+    ) -> libc::c_int;
 
     static rb_cObject: VALUE;
     fn rb_define_class(name: *const libc::c_char, rb_super: VALUE) -> VALUE;
@@ -59,6 +85,28 @@ unsafe extern "C" {
 
 fn initialize_trie() -> std::sync::Arc<std::sync::Mutex<kompo_storage::Fs<'static>>> {
     std::sync::Arc::new(std::sync::Mutex::new(initialize_fs()))
+}
+
+/// Decompress all files from COMPRESSED_FILES into FILES_BUFFER using zlib
+#[allow(dead_code)]
+fn decompress_all_files() {
+    let compressed_ptr = std::ptr::addr_of!(COMPRESSED_FILES) as *const libc::c_char as *const u8;
+    let buffer_ptr = std::ptr::addr_of_mut!(FILES_BUFFER) as *mut libc::c_char as *mut u8;
+    let mut dest_len = unsafe { FILES_BUFFER_SIZE as libc::c_ulong };
+
+    let result = unsafe {
+        uncompress(
+            buffer_ptr,
+            &mut dest_len,
+            compressed_ptr,
+            COMPRESSED_FILES_SIZE as libc::c_ulong,
+        )
+    };
+
+    if result != 0 {
+        // Z_OK = 0
+        panic!("zlib uncompress failed with error code: {}", result);
+    }
 }
 
 unsafe extern "C" fn context_func(_: VALUE, _: VALUE) -> VALUE {
@@ -113,21 +161,43 @@ unsafe extern "C" fn is_context_func(_: VALUE, _: VALUE) -> VALUE {
 }
 
 pub fn initialize_fs() -> kompo_storage::Fs<'static> {
+    let compression_enabled = unsafe { COMPRESSION_ENABLED } != 0;
+
+    // If compression is enabled, decompress all files first
+    if compression_enabled {
+        decompress_all_files();
+    }
+
     let mut builder = TrieBuilder::new();
 
     let path_slice = unsafe {
         std::slice::from_raw_parts(&PATHS as *const libc::c_char as *const u8, PATHS_SIZE as _)
     };
-    let file_slice = unsafe {
-        std::slice::from_raw_parts(&FILES as *const libc::c_char as *const u8, FILES_SIZE as _)
+
+    // Use FILES_BUFFER when compression is enabled, FILES otherwise
+    let file_slice = if compression_enabled {
+        unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::addr_of!(FILES_BUFFER) as *const libc::c_char as *const u8,
+                FILES_BUFFER_SIZE as _,
+            )
+        }
+    } else {
+        unsafe {
+            std::slice::from_raw_parts(&FILES as *const libc::c_char as *const u8, FILES_SIZE as _)
+        }
     };
 
     let splited_path_array = path_slice
         .split_inclusive(|a| *a == b'\0')
         .collect::<Vec<_>>();
 
-    let files_sizes =
-        unsafe { std::slice::from_raw_parts(&FILES_SIZES, splited_path_array.len() + 1) };
+    // Use ORIGINAL_SIZES when compression is enabled, FILES_SIZES otherwise
+    let files_sizes = if compression_enabled {
+        unsafe { std::slice::from_raw_parts(&ORIGINAL_SIZES, splited_path_array.len() + 1) }
+    } else {
+        unsafe { std::slice::from_raw_parts(&FILES_SIZES, splited_path_array.len() + 1) }
+    };
 
     for (i, path_byte) in splited_path_array.into_iter().enumerate() {
         let path = Path::new(unsafe {

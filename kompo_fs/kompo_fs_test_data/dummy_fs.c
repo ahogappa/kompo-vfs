@@ -12,3 +12,12 @@ const unsigned long long FILES_SIZES[] = {0, 13, 25};
 
 // Working directory
 const char WD[] = "/test";
+
+// Compression support symbols (compression disabled for tests)
+const int COMPRESSION_ENABLED = 0;
+const char COMPRESSED_FILES[] = "";
+const int COMPRESSED_FILES_SIZE = 0;
+const unsigned long long COMPRESSED_SIZES[] = {0};
+char FILES_BUFFER[1] = {0};
+const int FILES_BUFFER_SIZE = 0;
+const unsigned long long ORIGINAL_SIZES[] = {0};
