@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-01-31
+
+### Added
+- Add zlib compression support for embedded files [#21](https://github.com/ahogappa/kompo-vfs/pull/21)
+
+### Changed
+- Implement internal RwLock for fd_map in Fs struct for improved thread safety [#20](https://github.com/ahogappa/kompo-vfs/pull/20)
+- Add benchmarks for internal RwLock vs external Mutex [#20](https://github.com/ahogappa/kompo-vfs/pull/20)
+
 ## [0.5.1] - 2026-01-25
 
 ### Added
