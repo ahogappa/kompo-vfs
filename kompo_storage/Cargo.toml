@@ -7,3 +7,10 @@ edition = "2024"
 libc = "0.2.169"
 trie-rs = "0.4.2"
 rustc-hash = "2"
+
+[dev-dependencies]
+criterion = { version = "0.8.1", features = ["html_reports"] }
+
+[[bench]]
+name = "fs_bench"
+harness = false

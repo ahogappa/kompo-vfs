@@ -6,6 +6,7 @@ use std::ffi::OsString;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::os::unix::ffi::OsStrExt;
+use std::sync::RwLock;
 use trie_rs::map::Trie;
 use trie_rs::map::TrieBuilder;
 
@@ -31,7 +32,7 @@ pub struct FsDir {
 #[derive(Debug)]
 pub struct Fs<'a> {
     trie: Trie<&'a OsStr, &'a [u8]>,
-    fd_map: HashMap<i32, FileType<'a>>,
+    fd_map: RwLock<HashMap<i32, FileType<'a>>>,
 }
 
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
@@ -63,7 +64,7 @@ impl<'a> Fs<'a> {
 
         Self {
             trie,
-            fd_map: HashMap::new(),
+            fd_map: RwLock::new(HashMap::new()),
         }
     }
 
@@ -124,7 +125,7 @@ impl<'a> Fs<'a> {
     }
 
     pub fn is_fd_exists(&self, fd: i32) -> bool {
-        self.fd_map.contains_key(&fd)
+        self.fd_map.read().unwrap().contains_key(&fd)
     }
 
     pub fn is_dir_exists(&self, dir: &FsDir) -> bool {
@@ -197,24 +198,25 @@ impl<'a> Fs<'a> {
         }
     }
 
-    pub fn open(&mut self, path: &Vec<&OsStr>) -> Option<i32> {
+    pub fn open(&self, path: &Vec<&OsStr>) -> Option<i32> {
         let file_type = self.get_file_type_from_path(path)?;
         let fd = unsafe { libc::dup(0) };
-        self.fd_map.insert(fd, file_type);
+        self.fd_map.write().unwrap().insert(fd, file_type);
 
         Some(fd)
     }
 
-    pub fn open_at(&mut self, path: &Vec<&OsStr>) -> Option<i32> {
+    pub fn open_at(&self, path: &Vec<&OsStr>) -> Option<i32> {
         let file_type = self.get_file_type_from_path(path)?;
         let fd = unsafe { libc::dup(0) };
-        self.fd_map.insert(fd, file_type);
+        self.fd_map.write().unwrap().insert(fd, file_type);
 
         Some(fd)
     }
 
-    pub fn read(&mut self, fd: i32, buf: &mut [u8]) -> Option<isize> {
-        match self.fd_map.get_mut(&fd) {
+    pub fn read(&self, fd: i32, buf: &mut [u8]) -> Option<isize> {
+        let mut fd_map = self.fd_map.write().unwrap();
+        match fd_map.get_mut(&fd) {
             Some(file_type) => match file_type {
                 FileType::File { file, offset, .. } => {
                     if *offset == file.len() as u64 {
@@ -235,8 +237,8 @@ impl<'a> Fs<'a> {
         }
     }
 
-    pub fn close(&mut self, fd: i32) -> i32 {
-        self.fd_map.remove(&fd);
+    pub fn close(&self, fd: i32) -> i32 {
+        self.fd_map.write().unwrap().remove(&fd);
 
         0
     }
@@ -315,7 +317,8 @@ impl<'a> Fs<'a> {
     }
 
     pub fn fstat(&self, fd: i32, stat_buf: &mut libc::stat) -> Option<i32> {
-        match self.fd_map.get(&fd) {
+        let fd_map = self.fd_map.read().unwrap();
+        match fd_map.get(&fd) {
             Some(file_type) => {
                 *stat_buf = self.get_stat_from_file_type(file_type);
                 Some(0)
@@ -336,14 +339,16 @@ impl<'a> Fs<'a> {
     }
 
     pub fn fdopendir(&self, fd: i32) -> Option<FsDir> {
-        match self.fd_map.get(&fd) {
+        let fd_map = self.fd_map.read().unwrap();
+        match fd_map.get(&fd) {
             Some(FileType::Directory { .. }) => Some(FsDir { fd, offset: 0 }),
             _ => None,
         }
     }
 
     pub fn readdir(&self, dir: &mut FsDir) -> Option<*mut libc::dirent> {
-        match self.fd_map.get(&dir.fd) {
+        let fd_map = self.fd_map.read().unwrap();
+        match fd_map.get(&dir.fd) {
             Some(FileType::Directory { entries, .. }) => {
                 if dir.offset >= entries.len() as u64 {
                     return Some(std::ptr::null_mut());
@@ -406,15 +411,15 @@ impl<'a> Fs<'a> {
         }
     }
 
-    pub fn closedir(&mut self, dir: &FsDir) -> i32 {
+    pub fn closedir(&self, dir: &FsDir) -> i32 {
         self.close(dir.fd)
     }
 
-    pub fn opendir(&mut self, path: &Vec<&OsStr>) -> Option<FsDir> {
+    pub fn opendir(&self, path: &Vec<&OsStr>) -> Option<FsDir> {
         match self.get_file_type_from_path(path) {
             Some(file_type @ FileType::Directory { .. }) => {
                 let fd = unsafe { libc::dup(0) };
-                self.fd_map.insert(fd, file_type);
+                self.fd_map.write().unwrap().insert(fd, file_type);
 
                 Some(FsDir { fd, offset: 0 })
             }
@@ -422,14 +427,15 @@ impl<'a> Fs<'a> {
         }
     }
 
-    pub fn rewinddir(&mut self, dir: &mut FsDir) {
+    pub fn rewinddir(&self, dir: &mut FsDir) {
         dir.offset = 0;
     }
 }
 
 impl<'a> Drop for Fs<'a> {
     fn drop(&mut self) {
-        for fd in self.fd_map.keys() {
+        let fd_map = self.fd_map.read().unwrap();
+        for fd in fd_map.keys() {
             unsafe { libc::close(*fd) };
         }
     }
@@ -473,7 +479,7 @@ mod test {
 
     #[test]
     fn test_open_existing_file() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
@@ -486,7 +492,7 @@ mod test {
 
     #[test]
     fn test_open_nonexistent_file() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "nonexistent"]
             .into_iter()
             .map(OsStr::new)
@@ -498,7 +504,7 @@ mod test {
 
     #[test]
     fn test_read_file() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
@@ -515,7 +521,7 @@ mod test {
 
     #[test]
     fn test_read_partial() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "cat"]
             .into_iter()
             .map(OsStr::new)
@@ -536,7 +542,7 @@ mod test {
 
     #[test]
     fn test_read_empty_file() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "empty"]
             .into_iter()
             .map(OsStr::new)
@@ -552,7 +558,7 @@ mod test {
 
     #[test]
     fn test_read_eof() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
@@ -571,7 +577,7 @@ mod test {
 
     #[test]
     fn test_read_invalid_fd() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let mut buf = [0u8; 128];
 
         let result = fs.read(9999, &mut buf);
@@ -580,7 +586,7 @@ mod test {
 
     #[test]
     fn test_close() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
@@ -734,7 +740,7 @@ mod test {
 
     #[test]
     fn test_fstat() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "cat"]
             .into_iter()
             .map(OsStr::new)
@@ -773,7 +779,7 @@ mod test {
 
     #[test]
     fn test_opendir() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin"]
             .into_iter()
             .map(OsStr::new)
@@ -788,7 +794,7 @@ mod test {
 
     #[test]
     fn test_opendir_file_fails() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
@@ -800,7 +806,7 @@ mod test {
 
     #[test]
     fn test_opendir_nonexistent() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["nonexistent"]
             .into_iter()
             .map(OsStr::new)
@@ -812,7 +818,7 @@ mod test {
 
     #[test]
     fn test_readdir() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin"]
             .into_iter()
             .map(OsStr::new)
@@ -852,7 +858,7 @@ mod test {
 
     #[test]
     fn test_closedir() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin"]
             .into_iter()
             .map(OsStr::new)
@@ -870,7 +876,7 @@ mod test {
 
     #[test]
     fn test_rewinddir() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin"]
             .into_iter()
             .map(OsStr::new)
@@ -911,7 +917,7 @@ mod test {
 
     #[test]
     fn test_fdopendir() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin"]
             .into_iter()
             .map(OsStr::new)
@@ -927,7 +933,7 @@ mod test {
 
     #[test]
     fn test_fdopendir_file_fails() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
@@ -941,7 +947,7 @@ mod test {
 
     #[test]
     fn test_is_fd_exists() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
@@ -958,7 +964,7 @@ mod test {
 
     #[test]
     fn test_is_dir_exists() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin"]
             .into_iter()
             .map(OsStr::new)
@@ -1010,7 +1016,7 @@ mod test {
 
     #[test]
     fn test_open_at() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
@@ -1025,7 +1031,7 @@ mod test {
 
     #[test]
     fn test_multiple_opens() {
-        let mut fs = create_test_fs();
+        let fs = create_test_fs();
         let path = vec!["usr", "bin", "ls"]
             .into_iter()
             .map(OsStr::new)
