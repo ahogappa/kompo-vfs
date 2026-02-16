@@ -1,6 +1,6 @@
 [package]
 name = "kompo_fs"
-version = "0.6.0"
+version.workspace = true
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -18,7 +18,3 @@ errno = "*"
 [dev-dependencies]
 kompo_fs_test_data = { path = "./kompo_fs_test_data" }
 serial_test = "3"
-
-
-[profile.release]
-panic = "abort"
