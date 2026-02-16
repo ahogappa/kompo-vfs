@@ -3,6 +3,9 @@
 members = ["kompo_fs", "kompo_storage", "kompo_wrap", "kompo_fs/kompo_fs_test_data"]
 resolver = "2"
 
+[workspace.package]
+version = "0.6.0"
+
 [profile.release]
 panic = "abort"
 lto = true
