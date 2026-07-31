@@ -9,7 +9,6 @@ use std::ffi::CString;
 /// atomic refcount bump for nothing.
 static FS: std::sync::OnceLock<kompo_tree::Fs<'static>> = std::sync::OnceLock::new();
 
-/// The packed filesystem, initialising it on first use.
 pub fn fs() -> &'static kompo_tree::Fs<'static> {
     FS.get_or_init(initialize_fs)
 }
@@ -164,7 +163,6 @@ unsafe extern "C" fn is_context_func(_: VALUE, _: VALUE) -> VALUE {
 pub fn initialize_fs() -> kompo_tree::Fs<'static> {
     let compression_enabled = unsafe { COMPRESSION_ENABLED } != 0;
 
-    // If compression is enabled, decompress all files first
     if compression_enabled {
         decompress_all_files();
     }
@@ -172,7 +170,6 @@ pub fn initialize_fs() -> kompo_tree::Fs<'static> {
     let paths =
         unsafe { std::slice::from_raw_parts(&raw const PATHS as *const u8, PATHS_SIZE as _) };
 
-    // Use FILES_BUFFER when compression is enabled, FILES otherwise
     let files = if compression_enabled {
         unsafe {
             std::slice::from_raw_parts(&raw const FILES_BUFFER as *const u8, FILES_BUFFER_SIZE as _)
@@ -181,8 +178,8 @@ pub fn initialize_fs() -> kompo_tree::Fs<'static> {
         unsafe { std::slice::from_raw_parts(&raw const FILES as *const u8, FILES_SIZE as _) }
     };
 
-    // FILES_SIZES holds cumulative offsets, so it has one more entry than there
-    // are paths. Use ORIGINAL_SIZES when compression is enabled.
+    // FILES_SIZES holds cumulative offsets, so it has one more entry than
+    // there are paths.
     let count = kompo_tree::path_count(paths);
     let file_offsets = unsafe {
         std::slice::from_raw_parts(

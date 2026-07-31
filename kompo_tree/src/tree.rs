@@ -18,7 +18,6 @@ use std::cmp::Ordering;
 /// Index into the node arena. Node 0 is always the root directory.
 pub type NodeId = u32;
 
-/// The root directory.
 pub const ROOT: NodeId = 0;
 
 /// `file_idx` of a directory: it has no body in `FILES`.
@@ -112,7 +111,7 @@ impl<'a> Tree<'a> {
             let mut end = 0usize;
 
             for (nth, comp) in entry.split(|&b| b == b'/').enumerate() {
-                end += comp.len() + usize::from(nth > 0); // index just past `comp`
+                end += comp.len() + usize::from(nth > 0); // the separator is not part of `comp`
 
                 // Resolve the way a lookup would, so an oddly spelled entry
                 // lands on the node it names instead of creating a node
@@ -167,9 +166,9 @@ impl<'a> Tree<'a> {
             all_canonical &= canonical;
         }
 
-        // Group the children by parent: count, prefix-sum into `child_start`,
-        // then scatter. That is the standard way to build the CSR layout, and
-        // it replaces a heap-allocated child list per directory.
+        // Counting sort into the CSR arrays. Collecting each directory's
+        // children into its own vector first would cost a heap allocation per
+        // directory, all of it discarded once the groups are contiguous.
         for id in 1..nodes.len() {
             let parent = nodes[id].parent as usize;
             nodes[parent].child_len += 1;
@@ -246,7 +245,7 @@ impl<'a> Tree<'a> {
         self.lookup_walk(path)
     }
 
-    /// Resolve by walking the arena one component at a time.
+    /// Fallback for the spellings `by_path` cannot answer.
     fn lookup_walk(&self, path: &[u8]) -> Option<NodeId> {
         let mut cur = ROOT;
         for comp in path.split(|&b| b == b'/') {
@@ -259,7 +258,6 @@ impl<'a> Tree<'a> {
         Some(cur)
     }
 
-    /// Look up a single entry in a directory.
     #[inline]
     fn child(&self, dir: NodeId, name: &[u8]) -> Option<NodeId> {
         let node = self.nodes.get(dir as usize)?;
@@ -380,7 +378,6 @@ mod tests {
     use super::*;
 
     fn tree() -> Tree<'static> {
-        // "/usr/bin/ls", "/usr/bin/cat", "/usr/bin/hoge/fuga", "/usr/empty"
         let paths: &'static [u8] = b"/usr/bin/ls\0/usr/bin/cat\0/usr/bin/hoge/fuga\0/usr/empty\0";
         let files: &'static [u8] = b"LSCATFUGA";
         let offsets: &'static [u64] = &[0, 2, 5, 9, 9];
@@ -551,12 +548,10 @@ mod tests {
 
         assert!(!t.paths_are_canonical());
 
-        // Each one is reachable under the spelling a caller would use...
         assert_eq!(t.data(t.lookup(b"/a/b.rb").unwrap()), Some(&b"B"[..]));
         assert_eq!(t.data(t.lookup(b"/a/c.rb").unwrap()), Some(&b"C"[..]));
         assert_eq!(t.data(t.lookup(b"/a/d.rb").unwrap()), Some(&b"D"[..]));
 
-        // ...no bogus "." or ".." node was created...
         let a = t.lookup(b"/a").unwrap();
         let names: Vec<&[u8]> = (0..)
             .map_while(|i| t.child_at(a, i))
@@ -564,7 +559,6 @@ mod tests {
             .collect();
         assert_eq!(names, vec![&b"b.rb"[..], b"c.rb", b"d.rb", b"x"]);
 
-        // ...and a genuine miss is still a miss.
         assert_eq!(t.lookup(b"/a/nope.rb"), None);
     }
 

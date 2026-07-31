@@ -26,8 +26,8 @@ fn working_dir_prefix() -> &'static [u8] {
     PREFIX.get_or_init(|| unsafe { CStr::from_ptr(&raw const WD) }.to_bytes())
 }
 
-/// Index just past the parent directory of `path`, or `None` if it has no
-/// separator to split on. Never points past the root.
+/// Index just past the parent directory of `path`, clamped so it never points
+/// above the root, or `None` when there is no separator to split on.
 pub fn parent_end(path: &[u8]) -> Option<usize> {
     path.iter()
         .rposition(|&b| b == b'/')
@@ -93,8 +93,6 @@ pub fn kompo_path_at(dirfd: libc::c_int, path: &[u8]) -> Option<Cow<'_, [u8]>> {
     kompo_path(path)
 }
 
-/// Read a C path argument as bytes.
-///
 /// # Safety
 /// `path` must be a valid pointer to a null-terminated C string.
 pub unsafe fn path_bytes<'a>(path: *const libc::c_char) -> &'a [u8] {

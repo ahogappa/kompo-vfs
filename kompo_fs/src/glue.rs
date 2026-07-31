@@ -55,7 +55,6 @@ pub fn mmap_from_fs(
     }
 }
 
-/// Open a path that has already been resolved into the image.
 fn open_resolved(path: &[u8], oflag: libc::c_int) -> i32 {
     let fs = fs();
     let Some(node) = fs.lookup(path) else {

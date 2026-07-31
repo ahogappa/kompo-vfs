@@ -39,7 +39,6 @@ pub const DEV: libc::dev_t = libc::makedev(2222, 0);
 /// way while the node id below it stays dense and collision-free.
 pub const INO_BASE: u64 = 1 << 62;
 
-/// Inode number reported for a node.
 #[inline]
 pub const fn inode(id: NodeId) -> u64 {
     INO_BASE | id as u64
@@ -142,7 +141,6 @@ impl<'a> Fs<'a> {
         }
     }
 
-    /// Is this node a directory?
     #[inline]
     pub fn is_dir(&self, id: NodeId) -> bool {
         self.tree.is_dir(id)
@@ -155,7 +153,6 @@ impl<'a> Fs<'a> {
 
     // -- lookup -----------------------------------------------------------
 
-    /// Resolve an absolute path to a node.
     #[inline]
     pub fn lookup(&self, path: &[u8]) -> Option<NodeId> {
         self.tree.lookup(path)
@@ -238,10 +235,10 @@ impl<'a> Fs<'a> {
     }
 
     pub fn read(&self, fd: i32, buf: &mut [u8]) -> Option<isize> {
-        // Claim a range under the lock, then copy outside it. File bodies are
-        // immutable, so only the cursor needs protecting, and mmap routes
-        // whole-file reads through here -- holding the table exclusively
-        // across a multi-megabyte copy would stall every other packed fd.
+        // File bodies are immutable, so only the cursor needs the lock. mmap
+        // routes whole-file reads through here, and holding the table
+        // exclusively across a multi-megabyte copy would stall every other
+        // packed fd for the duration.
         let (data, offset, n) = {
             let mut fds = self.fds.write().ok()?;
             let open = fds.get_mut(fd)?;
