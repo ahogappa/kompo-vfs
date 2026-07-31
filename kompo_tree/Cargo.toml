@@ -1,0 +1,17 @@
+[package]
+name = "kompo_tree"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+libc = "0.2.169"
+rustc-hash = "2"
+
+[dev-dependencies]
+criterion = { version = "0.8.1", features = ["html_reports"] }
+kompo_storage = { path = "../kompo_storage" }
+trie-rs = "0.4.2"
+
+[[bench]]
+name = "tree_bench"
+harness = false

@@ -326,6 +326,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kompo_tree"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "kompo_storage",
+ "libc",
+ "rustc-hash",
+ "trie-rs",
+]
+
+[[package]]
 name = "kompo_wrap"
 version = "0.6.0"
 dependencies = [

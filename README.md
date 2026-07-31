@@ -12,6 +12,14 @@ kompo-vfs consists of three main components:
 | `kompo_storage` | Storage layer that manages file data and directory entries |
 | `kompo_wrap` | System call wrapper that intercepts and redirects filesystem operations |
 
+Plus one crate that is not wired into the binary yet:
+
+| Crate | Description |
+|-------|-------------|
+| `kompo_tree` | Flat-arena replacement for `kompo_storage`'s trie. Same operations, not yet used by `kompo_fs` |
+
+`kompo_tree` exists because path lookup through the trie costs more than the real filesystem it replaces. It indexes whole paths in one hash and gives each directory a contiguous range of entries, so `readdir` neither searches nor allocates. `cargo bench -p kompo_tree` runs both side by side on the same image.
+
 ### How It Works
 
 kompo-vfs hooks into system calls (`open`, `read`, `stat`, `opendir`, etc.) to transparently redirect file operations. When the packed binary runs:
@@ -77,6 +85,12 @@ kompo-vfs/
 ├── kompo_storage/      # Storage layer
 │   └── src/
 │       └── lib.rs      # File/directory data management
+├── kompo_tree/         # Flat-arena path index (not yet wired in)
+│   ├── src/
+│   │   ├── lib.rs      # Fs API: open, read, stat, readdir
+│   │   └── tree.rs     # Node arena and path resolution
+│   └── benches/
+│       └── tree_bench.rs # A/B against kompo_storage
 ├── kompo_wrap/         # System call wrappers
 │   └── src/
 │       └── lib.rs      # Intercepts open, read, stat, etc.
