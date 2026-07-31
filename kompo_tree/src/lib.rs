@@ -227,7 +227,12 @@ impl<'a> Fs<'a> {
 
     // -- files ------------------------------------------------------------
 
-    fn open_node(&self, id: NodeId) -> Option<i32> {
+    /// Open a node that has already been resolved.
+    ///
+    /// `open` is the usual entry point; this one exists so a caller that has to
+    /// inspect the node first -- `O_DIRECTORY` needs to tell ENOTDIR from
+    /// ENOENT -- does not have to resolve the path a second time.
+    pub fn open_node(&self, id: NodeId) -> Option<i32> {
         // A real fd, so it can never collide with one the process already has.
         let fd = unsafe { libc::dup(0) };
         if fd < 0 {

@@ -299,12 +299,10 @@ version = "0.6.0"
 dependencies = [
  "errno",
  "kompo_fs_test_data",
- "kompo_storage",
+ "kompo_tree",
  "kompo_wrap",
  "libc",
- "rustc-hash",
  "serial_test",
- "trie-rs",
 ]
 
 [[package]]
