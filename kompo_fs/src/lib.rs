@@ -183,7 +183,7 @@ pub fn initialize_fs() -> kompo_tree::Fs<'static> {
 
     // FILES_SIZES holds cumulative offsets, so it has one more entry than there
     // are paths. Use ORIGINAL_SIZES when compression is enabled.
-    let count = paths.split_inclusive(|&b| b == b'\0').count();
+    let count = kompo_tree::path_count(paths);
     let file_offsets = unsafe {
         std::slice::from_raw_parts(
             if compression_enabled {
@@ -195,7 +195,17 @@ pub fn initialize_fs() -> kompo_tree::Fs<'static> {
         )
     };
 
-    kompo_tree::Fs::new(paths, files, file_offsets)
+    let fs = kompo_tree::Fs::new(paths, files, file_offsets);
+
+    // The generator canonicalises every path. If that ever stops being true,
+    // lookups stay correct but give up their fast miss, so catch it here --
+    // this is the only place a real image enters the index.
+    debug_assert!(
+        fs.paths_are_canonical(),
+        "generator emitted a non-canonical path"
+    );
+
+    fs
 }
 
 /// # Safety
@@ -222,13 +232,13 @@ pub unsafe extern "C" fn kompo_fs_set_entrypoint_dir(entrypoint_path: *const lib
 
     let path = unsafe { util::path_bytes(entrypoint_path) };
 
-    // The generator emits this canonical, so the parent directory is simply
-    // everything before the last separator.
-    let Some(slash) = path.iter().rposition(|&b| b == b'/') else {
+    // The generator emits this canonical, so the parent is everything before
+    // the last separator.
+    let Some(end) = util::parent_end(path) else {
         return;
     };
 
-    *WORKING_DIR.write().unwrap() = Some(path[..slash.max(1)].to_vec());
+    *WORKING_DIR.write().unwrap() = Some(path[..end].to_vec());
 }
 
 #[cfg(test)]

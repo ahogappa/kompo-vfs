@@ -21,9 +21,10 @@
 
 mod tree;
 
-pub use tree::{NodeId, ROOT, Tree};
+pub use tree::{NodeId, path_count};
 
 use std::sync::RwLock;
+use tree::Tree;
 
 /// Fake device number, shared with `kompo_storage` so both report the same
 /// `st_dev`. Major 2222 is outside the range Linux hands out, and outside the
@@ -48,7 +49,6 @@ pub const fn inode(id: NodeId) -> u64 {
 struct OpenFile {
     node: NodeId,
     offset: u64,
-    is_dir: bool,
 }
 
 /// Open file descriptors, indexed directly by fd.
@@ -73,31 +73,15 @@ impl FdTable {
     }
 
     fn get(&self, fd: i32) -> Option<&OpenFile> {
-        if fd < 0 {
-            return None;
-        }
         self.slots.get(fd as usize)?.as_ref()
     }
 
     fn get_mut(&mut self, fd: i32) -> Option<&mut OpenFile> {
-        if fd < 0 {
-            return None;
-        }
         self.slots.get_mut(fd as usize)?.as_mut()
     }
 
     fn remove(&mut self, fd: i32) -> Option<OpenFile> {
-        if fd < 0 {
-            return None;
-        }
         self.slots.get_mut(fd as usize)?.take()
-    }
-
-    fn open_fds(&self) -> impl Iterator<Item = i32> + '_ {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, slot)| slot.as_ref().map(|_| i as i32))
     }
 }
 
@@ -158,8 +142,15 @@ impl<'a> Fs<'a> {
         }
     }
 
-    pub fn tree(&self) -> &Tree<'a> {
-        &self.tree
+    /// Is this node a directory?
+    #[inline]
+    pub fn is_dir(&self, id: NodeId) -> bool {
+        self.tree.is_dir(id)
+    }
+
+    /// Was every path in the blob spelled canonically? See [`Tree::build`].
+    pub fn paths_are_canonical(&self) -> bool {
+        self.tree.paths_are_canonical()
     }
 
     // -- lookup -----------------------------------------------------------
@@ -209,16 +200,6 @@ impl<'a> Fs<'a> {
         Some(0)
     }
 
-    /// The image holds no symlinks, so this is `stat`.
-    ///
-    /// The generator skips symlinked directories outright and copies a
-    /// symlinked file's target bytes under the link's own path, so nothing in
-    /// the image is a link. One file can appear under two paths that way; those
-    /// are two nodes with two inodes, as they are in `kompo_storage`.
-    pub fn lstat(&self, path: &[u8], st: &mut libc::stat) -> Option<i32> {
-        self.stat(path, st)
-    }
-
     pub fn fstat(&self, fd: i32, st: &mut libc::stat) -> Option<i32> {
         let node = self.fds.read().ok()?.get(fd)?.node;
         self.fill_stat(node, st)?;
@@ -247,7 +228,6 @@ impl<'a> Fs<'a> {
             OpenFile {
                 node: id,
                 offset: 0,
-                is_dir: self.tree.is_dir(id),
             },
         );
         Some(fd)
@@ -257,17 +237,10 @@ impl<'a> Fs<'a> {
         self.open_node(self.tree.lookup(path)?)
     }
 
-    /// Same as [`Fs::open`]; the caller resolves `dirfd` before calling.
-    pub fn open_at(&self, path: &[u8]) -> Option<i32> {
-        self.open(path)
-    }
-
     pub fn read(&self, fd: i32, buf: &mut [u8]) -> Option<isize> {
         let mut fds = self.fds.write().ok()?;
         let open = fds.get_mut(fd)?;
-        if open.is_dir {
-            return None;
-        }
+        // A directory has no body, so `data` is what rejects it.
         let data = self.tree.data(open.node)?;
         let offset = open.offset as usize;
         if offset >= data.len() {
@@ -286,14 +259,6 @@ impl<'a> Fs<'a> {
         0
     }
 
-    /// Pointer to a file body, for callers that map it rather than read it.
-    ///
-    /// Unlike `kompo_storage::Fs::file_read` this reports a missing path as
-    /// `None` instead of panicking.
-    pub fn file_read(&self, path: &[u8]) -> Option<*const u8> {
-        self.tree.data(self.tree.lookup(path)?).map(<[u8]>::as_ptr)
-    }
-
     pub fn is_fd_exists(&self, fd: i32) -> bool {
         self.fds.read().is_ok_and(|fds| fds.get(fd).is_some())
     }
@@ -310,7 +275,7 @@ impl<'a> Fs<'a> {
 
     pub fn fdopendir(&self, fd: i32) -> Option<FsDir> {
         let open = *self.fds.read().ok()?.get(fd)?;
-        if !open.is_dir {
+        if !self.tree.is_dir(open.node) {
             return None;
         }
         Some(FsDir::new(fd, open.node))
@@ -430,8 +395,10 @@ impl<'a> Fs<'a> {
 impl Drop for Fs<'_> {
     fn drop(&mut self) {
         if let Ok(fds) = self.fds.read() {
-            for fd in fds.open_fds() {
-                unsafe { libc::close(fd) };
+            for (fd, slot) in fds.slots.iter().enumerate() {
+                if slot.is_some() {
+                    unsafe { libc::close(fd as i32) };
+                }
             }
         }
     }
@@ -472,7 +439,15 @@ impl FsBuilder {
 
     /// Leak the blobs and build. Intended for tests and benchmarks.
     pub fn leak(self) -> Fs<'static> {
-        Fs::new(
+        let (paths, files, offsets) = self.leak_parts();
+
+        Fs::new(paths, files, offsets)
+    }
+
+    /// Leak the blobs without building, for a benchmark that wants to time
+    /// indexing them separately.
+    pub fn leak_parts(self) -> (&'static [u8], &'static [u8], &'static [u64]) {
+        (
             Vec::leak(self.paths),
             Vec::leak(self.files),
             Vec::leak(self.offsets),
@@ -483,6 +458,7 @@ impl FsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CStr;
 
     fn fs() -> Fs<'static> {
         let mut b = FsBuilder::new();
@@ -498,6 +474,17 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
+    /// Release both halves of an open: the table entry and the `dup(0)` fd.
+    fn release(fs: &Fs, fd: i32) {
+        fs.close(fd);
+        unsafe { libc::close(fd) };
+    }
+
+    fn entry_name(entry: &libc::dirent) -> String {
+        let name = unsafe { CStr::from_ptr(entry.d_name.as_ptr()) };
+        name.to_string_lossy().into_owned()
+    }
+
     fn drain(fs: &Fs, dir: &mut FsDir) -> Vec<String> {
         let mut out = Vec::new();
         loop {
@@ -505,13 +492,7 @@ mod tests {
             if entry.is_null() {
                 break;
             }
-            let name: Vec<u8> = unsafe { &*entry }
-                .d_name
-                .iter()
-                .take_while(|&&c| c != 0)
-                .map(|&c| c as u8)
-                .collect();
-            out.push(String::from_utf8_lossy(&name).into_owned());
+            out.push(entry_name(unsafe { &*entry }));
         }
         out
     }
@@ -539,8 +520,7 @@ mod tests {
         assert_eq!(&buf, b"cat_");
         assert_eq!(fs.read(fd, &mut buf), Some(4));
         assert_eq!(&buf, b"cont");
-        fs.close(fd);
-        unsafe { libc::close(fd) };
+        release(&fs, fd);
     }
 
     #[test]
@@ -549,8 +529,7 @@ mod tests {
         let fd = fs.open(b"/usr/empty").unwrap();
         let mut buf = [0u8; 8];
         assert_eq!(fs.read(fd, &mut buf), Some(0));
-        fs.close(fd);
-        unsafe { libc::close(fd) };
+        release(&fs, fd);
     }
 
     #[test]
@@ -562,8 +541,7 @@ mod tests {
         // A directory opens, but does not read.
         let fd = fs.open(b"/usr/bin").unwrap();
         assert_eq!(fs.read(fd, &mut [0u8; 8]), None);
-        fs.close(fd);
-        unsafe { libc::close(fd) };
+        release(&fs, fd);
     }
 
     #[test]
@@ -605,7 +583,6 @@ mod tests {
         assert_eq!(st.st_dev, DEV);
 
         assert_eq!(fs.stat(b"/nonexistent", &mut st), None);
-        assert_eq!(fs.lstat(b"/usr/bin/ls", &mut st), Some(0));
     }
 
     #[test]
@@ -622,8 +599,7 @@ mod tests {
         assert_eq!(by_fd.st_size, 16);
         assert_eq!(fs.fstat(9999, &mut by_fd), None);
 
-        fs.close(fd);
-        unsafe { libc::close(fd) };
+        release(&fs, fd);
     }
 
     #[test]
@@ -775,17 +751,6 @@ mod tests {
         fs.closedir(&dir);
         assert!(fs.readdir(&mut dir).is_none());
         unsafe { libc::close(fd) };
-    }
-
-    #[test]
-    fn file_read_returns_the_body() {
-        let fs = fs();
-        let ptr = fs.file_read(b"/usr/bin/ls").unwrap();
-        let body = unsafe { std::slice::from_raw_parts(ptr, 10) };
-        assert_eq!(body, b"ls_content");
-        assert!(fs.file_read(b"/nonexistent").is_none());
-        // A directory has no body.
-        assert!(fs.file_read(b"/usr/bin").is_none());
     }
 
     #[test]

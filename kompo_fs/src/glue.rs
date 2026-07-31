@@ -62,7 +62,7 @@ fn open_resolved(path: &[u8], oflag: libc::c_int) -> i32 {
         return enoent();
     };
 
-    if oflag & libc::O_DIRECTORY == libc::O_DIRECTORY && !fs.tree().is_dir(node) {
+    if oflag & libc::O_DIRECTORY == libc::O_DIRECTORY && !fs.is_dir(node) {
         errno::set_errno(errno::Errno(libc::ENOTDIR));
         return -1;
     }
@@ -101,18 +101,7 @@ pub unsafe fn openat_from_fs(
 
     let raw = unsafe { util::path_bytes(pathname) };
 
-    // A relative name is only ours when it resolves against the working
-    // directory, which is what AT_FDCWD asks for; any other dirfd names a
-    // directory in the real filesystem.
-    let resolved = if raw.first() == Some(&b'/') {
-        util::is_under_kompo_working_dir(raw).then_some(Cow::Borrowed(raw))
-    } else if dirfd == libc::AT_FDCWD {
-        util::kompo_path(raw)
-    } else {
-        None
-    };
-
-    match resolved {
+    match util::kompo_path_at(dirfd, raw) {
         Some(resolved) => open_resolved(&resolved, flags),
         None => unsafe { kompo_wrap::OPENAT_HANDLE(dirfd, pathname, flags, mode) },
     }
@@ -171,15 +160,7 @@ pub unsafe fn fstatat_from_fs(
 ) -> i32 {
     let raw = unsafe { util::path_bytes(pathname) };
 
-    let resolved = if raw.first() == Some(&b'/') {
-        util::is_under_kompo_working_dir(raw).then_some(Cow::Borrowed(raw))
-    } else if dirfd == libc::AT_FDCWD {
-        util::kompo_path(raw)
-    } else {
-        None
-    };
-
-    match resolved {
+    match util::kompo_path_at(dirfd, raw) {
         Some(resolved) => stat_resolved(&resolved, buf),
         None => unsafe { kompo_wrap::FSTATAT_HANDLE(dirfd, pathname, buf, flags) },
     }
@@ -273,13 +254,12 @@ pub fn readdir_from_fs(dir: *mut libc::DIR) -> *mut libc::dirent {
         return unsafe { kompo_wrap::READDIR_HANDLE(dir) };
     }
 
-    let mut handle = unsafe { Box::from_raw(dir as *mut kompo_tree::FsDir) };
-    // The entry points into `handle`, which outlives this call and is only
-    // rewritten by the next readdir -- the same contract as readdir(3).
-    let entry = fs().readdir(&mut handle).unwrap_or(std::ptr::null_mut());
-    let _ = Box::into_raw(handle);
+    // The DIR* stays the caller's until closedir, so borrow it. The entry
+    // points into it and is only rewritten by the next readdir -- the same
+    // contract as readdir(3).
+    let handle = unsafe { &mut *(dir as *mut kompo_tree::FsDir) };
 
-    entry
+    fs().readdir(handle).unwrap_or(std::ptr::null_mut())
 }
 
 #[unsafe(no_mangle)]
@@ -315,9 +295,8 @@ pub fn rewinddir_from_fs(dir: *mut libc::DIR) {
         return;
     }
 
-    let mut handle = unsafe { Box::from_raw(dir as *mut kompo_tree::FsDir) };
-    fs().rewinddir(&mut handle);
-    let _ = Box::into_raw(handle);
+    let handle = unsafe { &mut *(dir as *mut kompo_tree::FsDir) };
+    fs().rewinddir(handle);
 }
 
 /// # Safety
@@ -334,9 +313,13 @@ pub unsafe extern "C-unwind" fn realpath_from_fs(
         return unsafe { kompo_wrap::REALPATH_HANDLE(path, resolved_path) };
     };
 
-    // An absolute argument reaches us spelled however the caller wrote it, so
-    // normalise before answering: realpath(3) promises a canonical path.
-    let canonical = util::join_normalized(b"/", &resolved);
+    // realpath(3) promises a canonical path. A relative argument was already
+    // normalised against the working directory on the way in; an absolute one
+    // reaches us spelled however the caller wrote it.
+    let canonical = match resolved {
+        Cow::Owned(path) => path,
+        Cow::Borrowed(path) => util::join_normalized(b"/", path),
+    };
     let canonical = CString::new(canonical).expect("path contains a null byte");
 
     if resolved_path.is_null() {

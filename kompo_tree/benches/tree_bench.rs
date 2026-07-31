@@ -15,7 +15,7 @@ static MEDIUM: &[u8] = &[b'#'; 4096];
 static LARGE: &[u8] = &[b'#'; 32768];
 
 fn leak(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
+    s.leak()
 }
 
 /// A Rails app with its bundled gems, emitted gem by gem like the real image.
@@ -157,16 +157,11 @@ fn build_trie(image: &[(&'static str, &'static [u8])]) -> kompo_storage::Fs<'sta
 fn blobs(
     image: &[(&'static str, &'static [u8])],
 ) -> (&'static [u8], &'static [u8], &'static [u64]) {
-    let mut paths = Vec::new();
-    let mut files = Vec::new();
-    let mut offsets = vec![0u64];
+    let mut builder = kompo_tree::FsBuilder::new();
     for (path, data) in image {
-        paths.extend_from_slice(path.as_bytes());
-        paths.push(0);
-        files.extend_from_slice(data);
-        offsets.push(files.len() as u64);
+        builder.push(path, data);
     }
-    (Vec::leak(paths), Vec::leak(files), Vec::leak(offsets))
+    builder.leak_parts()
 }
 
 fn build_tree(image: &[(&'static str, &'static [u8])]) -> kompo_tree::Fs<'static> {

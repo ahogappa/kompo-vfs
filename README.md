@@ -68,7 +68,7 @@ This library is designed to be used with the [kompo](https://github.com/ahogappa
 ### Running Tests
 
 ```sh
-$ cargo test -p kompo_storage -p kompo_fs
+$ cargo test -p kompo_storage -p kompo_fs -p kompo_tree
 ```
 
 ### Project Structure

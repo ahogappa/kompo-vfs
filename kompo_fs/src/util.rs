@@ -14,6 +14,14 @@ pub fn is_under_kompo_working_dir(path: &[u8]) -> bool {
     path.starts_with(wd) && matches!(path.get(wd.len()), None | Some(b'/'))
 }
 
+/// Index just past the parent directory of `path`, or `None` if it has no
+/// separator to split on. Never points past the root.
+pub fn parent_end(path: &[u8]) -> Option<usize> {
+    path.iter()
+        .rposition(|&b| b == b'/')
+        .map(|slash| slash.max(1))
+}
+
 /// Join `rel` onto `base`, resolving `.` and `..` lexically.
 ///
 /// Nothing here touches the real filesystem, so it cannot follow a symlink the
@@ -27,9 +35,8 @@ pub fn join_normalized(base: &[u8], rel: &[u8]) -> Vec<u8> {
         match comp {
             b"" | b"." => {}
             b".." => {
-                if let Some(slash) = out.iter().rposition(|&b| b == b'/') {
-                    // Never pop past the root.
-                    out.truncate(slash.max(1));
+                if let Some(end) = parent_end(&out) {
+                    out.truncate(end);
                 }
             }
             _ => {
@@ -61,6 +68,19 @@ pub fn kompo_path(path: &[u8]) -> Option<Cow<'_, [u8]>> {
     Some(Cow::Owned(join_normalized(working_dir, path)))
 }
 
+/// Like [`kompo_path`], for the `*at` calls.
+///
+/// A relative name is only ours when it resolves against the working
+/// directory, which is what `AT_FDCWD` asks for; any other `dirfd` names a
+/// directory in the real filesystem.
+pub fn kompo_path_at(dirfd: libc::c_int, path: &[u8]) -> Option<Cow<'_, [u8]>> {
+    if path.first() != Some(&b'/') && dirfd != libc::AT_FDCWD {
+        return None;
+    }
+
+    kompo_path(path)
+}
+
 /// Read a C path argument as bytes.
 ///
 /// # Safety
@@ -84,11 +104,9 @@ pub unsafe fn is_dir_exists_in_kompo(dir: *mut libc::DIR) -> bool {
         return false;
     }
 
-    let dir = unsafe { Box::from_raw(dir as *mut kompo_tree::FsDir) };
-    let exists = fs.is_dir_exists(&dir);
-    let _ = Box::into_raw(dir);
+    let dir = unsafe { &*(dir as *const kompo_tree::FsDir) };
 
-    exists
+    fs.is_dir_exists(dir)
 }
 
 #[cfg(test)]

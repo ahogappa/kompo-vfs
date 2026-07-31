@@ -107,34 +107,25 @@ impl<'a> Tree<'a> {
             }
 
             let mut cur = ROOT;
-            let mut i = 0usize;
-            // Decided while walking rather than by a second pass over the
-            // bytes, which showed up as a fifth of the build time.
-            let mut canonical = entry[0] == b'/';
-            while i < entry.len() {
-                let slashes = i;
-                while i < entry.len() && entry[i] == b'/' {
-                    i += 1;
-                }
-                if i - slashes > 1 {
-                    canonical = false; // a "//" run
-                }
-                if i >= entry.len() {
-                    if i > slashes && cur != ROOT {
-                        canonical = false; // a trailing "/"
-                    }
-                    break;
-                }
-                let start = i;
-                while i < entry.len() && entry[i] != b'/' {
-                    i += 1;
-                }
-                let comp = &entry[start..i];
+            // Canonicality is decided while walking rather than by a second
+            // pass over the bytes, which measured a fifth of the build time.
+            let mut canonical = entry.first() == Some(&b'/');
+            let mut end = 0usize;
+
+            for (nth, comp) in entry.split(|&b| b == b'/').enumerate() {
+                end += comp.len() + usize::from(nth > 0); // index just past `comp`
 
                 // Resolve the way a lookup would, so an oddly spelled entry
                 // lands on the node it names instead of creating a node
                 // literally called "." or "..".
                 match comp {
+                    // Only the leading separator may leave an empty component.
+                    // Anything later is a "//" run or a trailing slash, except
+                    // in the bare root, whose sole component is its separator.
+                    b"" => {
+                        canonical &= nth == 0 || entry.len() == 1;
+                        continue;
+                    }
                     b"." => {
                         canonical = false;
                         continue;
@@ -166,11 +157,11 @@ impl<'a> Tree<'a> {
                     }
                 };
 
-                // `entry[..i]` is the absolute path of the node we just reached.
-                by_path.entry(&entry[..i]).or_insert(cur);
+                // `entry[..end]` is the absolute path of the node we just reached.
+                by_path.entry(&entry[..end]).or_insert(cur);
             }
 
-            // The component the loop ended on is the file itself.
+            // The component the walk ended on is the file itself.
             if cur != ROOT {
                 nodes[cur as usize].file_idx = file_idx as u32;
             }
@@ -237,12 +228,12 @@ impl<'a> Tree<'a> {
     }
 
     /// Resolve by walking the arena one component at a time.
-    pub fn lookup_walk(&self, path: &[u8]) -> Option<NodeId> {
+    fn lookup_walk(&self, path: &[u8]) -> Option<NodeId> {
         let mut cur = ROOT;
         for comp in path.split(|&b| b == b'/') {
             match comp {
                 b"" | b"." => continue,
-                b".." => cur = self.nodes.get(cur as usize)?.parent,
+                b".." => cur = self.parent(cur),
                 _ => cur = self.child(cur, comp)?,
             }
         }
@@ -251,7 +242,7 @@ impl<'a> Tree<'a> {
 
     /// Look up a single entry in a directory.
     #[inline]
-    pub fn child(&self, dir: NodeId, name: &[u8]) -> Option<NodeId> {
+    fn child(&self, dir: NodeId, name: &[u8]) -> Option<NodeId> {
         let node = self.nodes.get(dir as usize)?;
         let base = node.child_start as usize;
         let (mut lo, mut hi) = (0usize, node.child_len as usize);
@@ -314,11 +305,6 @@ impl<'a> Tree<'a> {
         self.nodes.get(id as usize).map_or(ROOT, |n| n.parent)
     }
 
-    #[inline]
-    pub fn child_count(&self, dir: NodeId) -> u32 {
-        self.nodes.get(dir as usize).map_or(0, |n| n.child_len)
-    }
-
     /// `index`-th entry of `dir`, in name order.
     #[inline]
     pub fn child_at(&self, dir: NodeId, index: u32) -> Option<NodeId> {
@@ -330,19 +316,14 @@ impl<'a> Tree<'a> {
             .get(node.child_start as usize + index as usize)
             .copied()
     }
+}
 
-    pub fn node_count(&self) -> usize {
-        self.nodes.len()
-    }
-
-    /// Bytes held by the arena itself, excluding the borrowed blobs.
-    pub fn heap_bytes(&self) -> usize {
-        self.nodes.len() * std::mem::size_of::<Node>()
-            + self.children.len() * 4
-            + self.name_off.len() * 4
-            + self.name_blob.len()
-            + self.by_path.len() * (std::mem::size_of::<(&[u8], NodeId)>() + 1)
-    }
+/// Number of entries in a NUL separated path blob.
+///
+/// `FILES_SIZES` has one more entry than this. Exposed so the framing
+/// convention lives here rather than being re-derived by every caller.
+pub fn path_count(paths: &[u8]) -> usize {
+    split_paths(paths).count()
 }
 
 /// Split the NUL separated path blob, dropping the terminator.
@@ -433,8 +414,9 @@ mod tests {
     fn entries_are_sorted_and_complete() {
         let t = tree();
         let bin = t.lookup(b"/usr/bin").unwrap();
-        let names: Vec<&[u8]> = (0..t.child_count(bin))
-            .map(|i| t.name(t.child_at(bin, i).unwrap()))
+        let names: Vec<&[u8]> = (0..)
+            .map_while(|i| t.child_at(bin, i))
+            .map(|id| t.name(id))
             .collect();
         assert_eq!(names, vec![&b"cat"[..], b"hoge", b"ls"]);
         assert_eq!(t.child_at(bin, 3), None);
@@ -459,6 +441,37 @@ mod tests {
         let first = t.lookup(b"/usr/bin/ls").unwrap();
         let last = t.lookup(b"/usr/empty").unwrap();
         assert!(first < last);
+    }
+
+    /// `lookup`'s short-circuit is only sound while the verdict `build` reaches
+    /// while walking agrees with the standalone `is_canonical`. They are
+    /// written differently for speed, so pin them to each other.
+    #[test]
+    fn build_agrees_with_is_canonical() {
+        for entry in [
+            &b"/a/b.rb"[..],
+            b"/a",
+            b"/",
+            b"a/b.rb",
+            b"/a//b.rb",
+            b"//a/b.rb",
+            b"/a/./b.rb",
+            b"/a/../b.rb",
+            b"/a/b/",
+            b"/a/b//",
+        ] {
+            let mut blob = entry.to_vec();
+            blob.push(0);
+            let blob: &'static [u8] = Vec::leak(blob);
+
+            let tree = Tree::build(blob, b"", &[0, 0]);
+            assert_eq!(
+                tree.paths_are_canonical(),
+                is_canonical(entry),
+                "disagreed on {:?}",
+                std::str::from_utf8(entry).unwrap()
+            );
+        }
     }
 
     #[test]
@@ -526,8 +539,9 @@ mod tests {
 
         // ...no bogus "." or ".." node was created...
         let a = t.lookup(b"/a").unwrap();
-        let names: Vec<&[u8]> = (0..t.child_count(a))
-            .map(|i| t.name(t.child_at(a, i).unwrap()))
+        let names: Vec<&[u8]> = (0..)
+            .map_while(|i| t.child_at(a, i))
+            .map(|id| t.name(id))
             .collect();
         assert_eq!(names, vec![&b"b.rb"[..], b"c.rb", b"d.rb", b"x"]);
 
