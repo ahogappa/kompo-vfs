@@ -528,6 +528,21 @@ mod tests {
         WORKING_DIR.write().unwrap().take();
     }
 
+    /// The working directory is matched as a byte prefix, so a sibling whose
+    /// name merely extends it must not be captured.
+    #[test]
+    fn a_sibling_of_the_working_dir_is_not_ours() {
+        let path = CString::new("/testing/hello.txt").unwrap();
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+
+        // Not in the image, and not the VFS's to answer -- it falls through to
+        // the real filesystem, where it does not exist either.
+        assert_eq!(glue::stat_from_fs(path.as_ptr(), &mut stat_buf), -1);
+        assert!(!util::is_under_kompo_working_dir(b"/testing/hello.txt"));
+        assert!(util::is_under_kompo_working_dir(b"/test/hello.txt"));
+        assert!(util::is_under_kompo_working_dir(b"/test"));
+    }
+
     /// `realpath(3)` promises a canonical path, so an oddly spelled argument
     /// must not come back unchanged.
     #[test]

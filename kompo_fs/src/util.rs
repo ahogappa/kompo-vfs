@@ -6,11 +6,12 @@ use crate::{FS, WD, WORKING_DIR};
 /// Is `path` inside the packed working directory?
 ///
 /// The generator emits `WD` canonical and without a trailing slash, so a byte
-/// prefix match answers it.
+/// prefix match answers it. The boundary check is what keeps a sibling like
+/// `/tmp/kompo-abcdefg` out when the working directory is `/tmp/kompo-abcdef`.
 pub fn is_under_kompo_working_dir(path: &[u8]) -> bool {
     let wd = unsafe { CStr::from_ptr(&raw const WD) }.to_bytes();
 
-    path.starts_with(wd)
+    path.starts_with(wd) && matches!(path.get(wd.len()), None | Some(b'/'))
 }
 
 /// Join `rel` onto `base`, resolving `.` and `..` lexically.
