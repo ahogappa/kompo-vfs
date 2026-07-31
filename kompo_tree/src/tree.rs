@@ -48,6 +48,15 @@ pub struct Tree<'a> {
     name_blob: Box<[u8]>,
     /// Canonical absolute path -> node. Keys borrow the caller's path blob.
     by_path: FxHashMap<&'a [u8], NodeId>,
+    /// Was every entry in the path blob spelled canonically?
+    ///
+    /// The generator guarantees it is (see [`Tree::build`]), and when it holds,
+    /// `by_path` contains every path under the spelling a caller will use, so a
+    /// miss is a real ENOENT. If a future generator ever emits `/a//b.rb`, that
+    /// node would only be reachable under the odd spelling, and answering a
+    /// canonical query from the index alone would be a false ENOENT. Dropping
+    /// the short-circuit in that case costs a walk per miss and stays correct.
+    all_canonical: bool,
     files: &'a [u8],
     file_offsets: &'a [u64],
 }
@@ -57,6 +66,25 @@ impl<'a> Tree<'a> {
     ///
     /// `paths` is NUL separated, `file_offsets` has one more entry than there
     /// are paths, and body `i` is `files[file_offsets[i]..file_offsets[i + 1]]`.
+    ///
+    /// What the kompo generator guarantees about `paths`, which this relies on:
+    ///
+    /// * every entry is an absolute canonical path -- it passes through
+    ///   `File.expand_path`, so no `//`, no `.` or `..`, no trailing slash;
+    /// * only files appear, never directories, so a node with children is a
+    ///   directory and nothing else;
+    /// * entries are grouped by source tree, which is what makes node ids track
+    ///   the layout of `FILES`;
+    /// * the blob always ends with a NUL, which `split_paths` absorbs without
+    ///   producing a trailing empty entry.
+    ///
+    /// Symlinks are *not* resolved by the generator, so one file can appear
+    /// under two paths. Those become two nodes with two inodes, matching what
+    /// the trie in `kompo_storage` does.
+    ///
+    /// None of these are assumed blindly: odd spellings are normalised below
+    /// and recorded in `all_canonical`, so a generator change degrades speed
+    /// rather than correctness.
     pub fn build(paths: &'a [u8], files: &'a [u8], file_offsets: &'a [u64]) -> Self {
         let mut nodes = vec![Node {
             parent: ROOT,
@@ -72,6 +100,7 @@ impl<'a> Tree<'a> {
         by_path.insert(b"/", ROOT);
 
         // Entries are visited in blob order, so node ids follow PATHS order.
+        let mut all_canonical = true;
         for (file_idx, entry) in split_paths(paths).enumerate() {
             if entry.is_empty() {
                 continue; // keeps file_idx aligned with file_offsets
@@ -79,11 +108,21 @@ impl<'a> Tree<'a> {
 
             let mut cur = ROOT;
             let mut i = 0usize;
+            // Decided while walking rather than by a second pass over the
+            // bytes, which showed up as a fifth of the build time.
+            let mut canonical = entry[0] == b'/';
             while i < entry.len() {
+                let slashes = i;
                 while i < entry.len() && entry[i] == b'/' {
                     i += 1;
                 }
+                if i - slashes > 1 {
+                    canonical = false; // a "//" run
+                }
                 if i >= entry.len() {
+                    if i > slashes && cur != ROOT {
+                        canonical = false; // a trailing "/"
+                    }
                     break;
                 }
                 let start = i;
@@ -91,6 +130,22 @@ impl<'a> Tree<'a> {
                     i += 1;
                 }
                 let comp = &entry[start..i];
+
+                // Resolve the way a lookup would, so an oddly spelled entry
+                // lands on the node it names instead of creating a node
+                // literally called "." or "..".
+                match comp {
+                    b"." => {
+                        canonical = false;
+                        continue;
+                    }
+                    b".." => {
+                        canonical = false;
+                        cur = nodes[cur as usize].parent;
+                        continue;
+                    }
+                    _ => {}
+                }
 
                 cur = match by_component.get(&(cur, comp)) {
                     Some(&id) => id,
@@ -119,6 +174,7 @@ impl<'a> Tree<'a> {
             if cur != ROOT {
                 nodes[cur as usize].file_idx = file_idx as u32;
             }
+            all_canonical &= canonical;
         }
 
         // Flatten the per-parent lists into one array. Parents are still in
@@ -146,9 +202,19 @@ impl<'a> Tree<'a> {
             name_off: name_off.into_boxed_slice(),
             name_blob: name_blob.into_boxed_slice(),
             by_path,
+            all_canonical,
             files,
             file_offsets,
         }
+    }
+
+    /// Was every path in the blob spelled canonically?
+    ///
+    /// True for anything the kompo generator produces. Exposed so a change on
+    /// that side shows up as a failing assertion rather than as a slow lookup
+    /// nobody notices.
+    pub fn paths_are_canonical(&self) -> bool {
+        self.all_canonical
     }
 
     /// Resolve an absolute path.
@@ -162,8 +228,9 @@ impl<'a> Tree<'a> {
         }
         // Every canonical path is in the index, so a miss here is a real ENOENT
         // and must not pay for a second traversal -- that is the hot case
-        // during `require`, which probes far more names than it finds.
-        if is_canonical(path) {
+        // during `require`, which probes far more names than it finds. That
+        // only holds if the blob itself was canonical; see `all_canonical`.
+        if self.all_canonical && is_canonical(path) {
             return None;
         }
         self.lookup_walk(path)
@@ -403,6 +470,69 @@ mod tests {
         assert!(!is_canonical(b"/a/b/"));
         assert!(!is_canonical(b"/a/./b"));
         assert!(!is_canonical(b"/a/../b"));
+    }
+
+    /// The generator always terminates the last path too, so `PATHS_SIZE`
+    /// counts a final NUL. That must not shift `file_idx` off `FILES_SIZES`.
+    #[test]
+    fn trailing_nul_does_not_add_a_phantom_entry() {
+        let paths: &'static [u8] = b"/a.rb\0/b.rb\0";
+        let files: &'static [u8] = b"AABBB";
+        let offsets: &'static [u64] = &[0, 2, 5];
+        let t = Tree::build(paths, files, offsets);
+
+        assert_eq!(split_paths(paths).count(), 2);
+        assert_eq!(t.data(t.lookup(b"/a.rb").unwrap()), Some(&b"AA"[..]));
+        assert_eq!(t.data(t.lookup(b"/b.rb").unwrap()), Some(&b"BBB"[..]));
+    }
+
+    /// `main.c` embeds the entrypoint without normalising it, so `kompo -e
+    /// ./main.rb` asks for `/wd/./main.rb` while the blob holds `/wd/main.rb`.
+    #[test]
+    fn entrypoint_spelled_with_a_dot_still_resolves() {
+        let paths: &'static [u8] = b"/wd/main.rb\0";
+        let files: &'static [u8] = b"puts 1";
+        let offsets: &'static [u64] = &[0, 6];
+        let t = Tree::build(paths, files, offsets);
+
+        let main = t.lookup(b"/wd/main.rb").unwrap();
+        assert_eq!(t.lookup(b"/wd/./main.rb"), Some(main));
+        // The working directory is derived from that same string.
+        assert_eq!(t.lookup(b"/wd/."), t.lookup(b"/wd"));
+    }
+
+    #[test]
+    fn generator_output_is_recognised_as_canonical() {
+        let paths: &'static [u8] = b"/a/b.rb\0/a/c/d.rb\0";
+        let t = Tree::build(paths, b"XY", &[0, 1, 2]);
+        assert!(t.paths_are_canonical());
+    }
+
+    /// If the generator ever regresses, lookups must get slower, not wrong.
+    #[test]
+    fn odd_entries_in_the_blob_still_resolve_canonically() {
+        // A redundant slash, a dot component, and a parent component.
+        let paths: &'static [u8] = b"/a//b.rb\0/a/./c.rb\0/a/x/../d.rb\0";
+        let files: &'static [u8] = b"BCD";
+        let offsets: &'static [u64] = &[0, 1, 2, 3];
+        let t = Tree::build(paths, files, offsets);
+
+        assert!(!t.paths_are_canonical());
+
+        // Each one is reachable under the spelling a caller would use...
+        assert_eq!(t.data(t.lookup(b"/a/b.rb").unwrap()), Some(&b"B"[..]));
+        assert_eq!(t.data(t.lookup(b"/a/c.rb").unwrap()), Some(&b"C"[..]));
+        assert_eq!(t.data(t.lookup(b"/a/d.rb").unwrap()), Some(&b"D"[..]));
+
+        // ...no bogus "." or ".." node was created...
+        let a = t.lookup(b"/a").unwrap();
+        let names: Vec<&[u8]> = (0..t.child_count(a))
+            .map(|i| t.name(t.child_at(a, i).unwrap()))
+            .collect();
+        assert_eq!(names, vec![&b"b.rb"[..], b"c.rb", b"d.rb", b"x"]);
+
+        // ...and a genuine miss is still a miss.
+        assert_eq!(t.lookup(b"/a/nope.rb"), None);
     }
 
     #[test]

@@ -6,7 +6,10 @@
 //!
 //! * paths are taken as raw bytes rather than pre-split components, because
 //!   every caller in `kompo_fs` already has an absolute path in hand and the
-//!   splitting was pure overhead;
+//!   splitting was pure overhead. It also sidesteps the `to_str().unwrap()` in
+//!   `kompo_fs::glue`, which panics on a path that is not valid UTF-8 -- the
+//!   generator does not validate encoding, and a gem shipping a Latin-1 or
+//!   Shift_JIS filename is enough to hit it;
 //! * a directory knows its entries as a contiguous range, so `readdir` neither
 //!   searches nor allocates.
 //!
@@ -207,6 +210,11 @@ impl<'a> Fs<'a> {
     }
 
     /// The image holds no symlinks, so this is `stat`.
+    ///
+    /// The generator skips symlinked directories outright and copies a
+    /// symlinked file's target bytes under the link's own path, so nothing in
+    /// the image is a link. One file can appear under two paths that way; those
+    /// are two nodes with two inodes, as they are in `kompo_storage`.
     pub fn lstat(&self, path: &[u8], st: &mut libc::stat) -> Option<i32> {
         self.stat(path, st)
     }
