@@ -334,7 +334,10 @@ pub unsafe extern "C-unwind" fn realpath_from_fs(
         return unsafe { kompo_wrap::REALPATH_HANDLE(path, resolved_path) };
     };
 
-    let canonical = CString::new(resolved.into_owned()).expect("path contains a null byte");
+    // An absolute argument reaches us spelled however the caller wrote it, so
+    // normalise before answering: realpath(3) promises a canonical path.
+    let canonical = util::join_normalized(b"/", &resolved);
+    let canonical = CString::new(canonical).expect("path contains a null byte");
 
     if resolved_path.is_null() {
         // The caller frees this, matching realpath(path, NULL).

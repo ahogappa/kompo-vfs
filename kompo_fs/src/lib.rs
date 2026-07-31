@@ -528,6 +528,24 @@ mod tests {
         WORKING_DIR.write().unwrap().take();
     }
 
+    /// `realpath(3)` promises a canonical path, so an oddly spelled argument
+    /// must not come back unchanged.
+    #[test]
+    #[serial]
+    fn realpath_canonicalises() {
+        WORKING_DIR.write().unwrap().take();
+
+        let path = CString::new("/test/./hello.txt").unwrap();
+        let resolved = unsafe { glue::realpath_from_fs(path.as_ptr(), std::ptr::null_mut()) };
+        assert!(!resolved.is_null());
+        assert_eq!(
+            unsafe { CStr::from_ptr(resolved) }.to_bytes(),
+            b"/test/hello.txt"
+        );
+
+        unsafe { drop(CString::from_raw(resolved as *mut libc::c_char)) };
+    }
+
     #[test]
     #[serial]
     fn test_kompo_fs_set_entrypoint_dir_with_valid_path() {
