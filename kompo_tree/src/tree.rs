@@ -93,7 +93,6 @@ impl<'a> Tree<'a> {
             child_len: 0,
             file_idx: NO_FILE,
         }];
-        let mut kids: Vec<Vec<NodeId>> = vec![Vec::new()];
         let mut names: Vec<&'a [u8]> = vec![&[]];
         let mut by_component: FxHashMap<(NodeId, &'a [u8]), NodeId> = FxHashMap::default();
         let mut by_path: FxHashMap<&'a [u8], NodeId> = FxHashMap::default();
@@ -149,16 +148,16 @@ impl<'a> Tree<'a> {
                             child_len: 0,
                             file_idx: NO_FILE,
                         });
-                        kids.push(Vec::new());
                         names.push(comp);
-                        kids[cur as usize].push(id);
                         by_component.insert((cur, comp), id);
+                        // `entry[..end]` is this node's absolute path. Recording
+                        // it only where the node is created is what keeps a
+                        // directory prefix from being hashed once per file
+                        // beneath it.
+                        by_path.insert(&entry[..end], id);
                         id
                     }
                 };
-
-                // `entry[..end]` is the absolute path of the node we just reached.
-                by_path.entry(&entry[..end]).or_insert(cur);
             }
 
             // The component the walk ended on is the file itself.
@@ -168,23 +167,43 @@ impl<'a> Tree<'a> {
             all_canonical &= canonical;
         }
 
-        // Flatten the per-parent lists into one array. Parents are still in
-        // PATHS order, so sibling groups stay grouped by gem as emitted.
-        let mut children: Vec<NodeId> = Vec::with_capacity(nodes.len());
-        let mut name_blob: Vec<u8> = Vec::new();
-        let mut name_off: Vec<u32> = vec![0];
-        for parent in 0..nodes.len() {
-            let mut group = std::mem::take(&mut kids[parent]);
-            group.sort_unstable_by(|&x, &y| names[x as usize].cmp(names[y as usize]));
+        // Group the children by parent: count, prefix-sum into `child_start`,
+        // then scatter. That is the standard way to build the CSR layout, and
+        // it replaces a heap-allocated child list per directory.
+        for id in 1..nodes.len() {
+            let parent = nodes[id].parent as usize;
+            nodes[parent].child_len += 1;
+        }
+        let mut next_slot = 0u32;
+        for node in nodes.iter_mut() {
+            node.child_start = next_slot;
+            next_slot += node.child_len;
+        }
 
-            nodes[parent].child_start = children.len() as u32;
-            nodes[parent].child_len = group.len() as u32;
-            for id in group {
-                nodes[id as usize].name_slot = children.len() as u32;
-                children.push(id);
-                name_blob.extend_from_slice(names[id as usize]);
-                name_off.push(name_blob.len() as u32);
-            }
+        let mut cursor: Vec<u32> = nodes.iter().map(|n| n.child_start).collect();
+        // Every node but the root is exactly one parent's child.
+        let mut children: Vec<NodeId> = vec![ROOT; nodes.len() - 1];
+        for (id, node) in nodes.iter().enumerate().skip(1) {
+            let parent = node.parent as usize;
+            children[cursor[parent] as usize] = id as NodeId;
+            cursor[parent] += 1;
+        }
+
+        // Parents are still in PATHS order, so sibling groups stay grouped by
+        // source tree as emitted; sorting only orders within one group.
+        for node in nodes.iter() {
+            let start = node.child_start as usize;
+            let group = &mut children[start..start + node.child_len as usize];
+            group.sort_unstable_by_key(|&id| names[id as usize]);
+        }
+
+        let mut name_blob: Vec<u8> = Vec::new();
+        let mut name_off: Vec<u32> = Vec::with_capacity(children.len() + 1);
+        name_off.push(0);
+        for (slot, &id) in children.iter().enumerate() {
+            nodes[id as usize].name_slot = slot as u32;
+            name_blob.extend_from_slice(names[id as usize]);
+            name_off.push(name_blob.len() as u32);
         }
 
         Tree {
