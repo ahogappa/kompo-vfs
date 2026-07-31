@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::ffi::CStr;
+use std::sync::OnceLock;
 
 use crate::{FS, WD, WORKING_DIR};
 
@@ -9,9 +10,20 @@ use crate::{FS, WD, WORKING_DIR};
 /// prefix match answers it. The boundary check is what keeps a sibling like
 /// `/tmp/kompo-abcdefg` out when the working directory is `/tmp/kompo-abcdef`.
 pub fn is_under_kompo_working_dir(path: &[u8]) -> bool {
-    let wd = unsafe { CStr::from_ptr(&raw const WD) }.to_bytes();
+    let wd = working_dir_prefix();
 
     path.starts_with(wd) && matches!(path.get(wd.len()), None | Some(b'/'))
+}
+
+/// The packed working directory, measured once.
+///
+/// `WD` is a linker constant, so the `strlen` behind `CStr::from_ptr` finds the
+/// same answer every time -- and this runs on the reject path of every
+/// intercepted call, before we know the path is not ours.
+fn working_dir_prefix() -> &'static [u8] {
+    static PREFIX: OnceLock<&'static [u8]> = OnceLock::new();
+
+    PREFIX.get_or_init(|| unsafe { CStr::from_ptr(&raw const WD) }.to_bytes())
 }
 
 /// Index just past the parent directory of `path`, or `None` if it has no

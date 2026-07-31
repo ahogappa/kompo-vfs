@@ -238,17 +238,25 @@ impl<'a> Fs<'a> {
     }
 
     pub fn read(&self, fd: i32, buf: &mut [u8]) -> Option<isize> {
-        let mut fds = self.fds.write().ok()?;
-        let open = fds.get_mut(fd)?;
-        // A directory has no body, so `data` is what rejects it.
-        let data = self.tree.data(open.node)?;
-        let offset = open.offset as usize;
-        if offset >= data.len() {
-            return Some(0);
-        }
-        let n = (data.len() - offset).min(buf.len());
+        // Claim a range under the lock, then copy outside it. File bodies are
+        // immutable, so only the cursor needs protecting, and mmap routes
+        // whole-file reads through here -- holding the table exclusively
+        // across a multi-megabyte copy would stall every other packed fd.
+        let (data, offset, n) = {
+            let mut fds = self.fds.write().ok()?;
+            let open = fds.get_mut(fd)?;
+            // A directory has no body, so `data` is what rejects it.
+            let data = self.tree.data(open.node)?;
+            let offset = open.offset as usize;
+            if offset >= data.len() {
+                return Some(0);
+            }
+            let n = (data.len() - offset).min(buf.len());
+            open.offset += n as u64;
+            (data, offset, n)
+        };
+
         buf[..n].copy_from_slice(&data[offset..offset + n]);
-        open.offset += n as u64;
         Some(n as isize)
     }
 
@@ -299,7 +307,6 @@ impl<'a> Fs<'a> {
     }
 
     fn fill_dirent(&self, id: NodeId, next_offset: u64, out: &mut libc::dirent) {
-        *out = unsafe { std::mem::zeroed() };
         out.d_ino = inode(id);
         out.d_type = if self.tree.is_dir(id) {
             libc::DT_DIR
@@ -309,11 +316,14 @@ impl<'a> Fs<'a> {
         out.d_reclen = size_of::<libc::dirent>() as _;
 
         let name = self.tree.name(id);
-        // Leave room for the terminator; the buffer is already zeroed.
         let n = name.len().min(out.d_name.len() - 1);
         for (slot, &byte) in out.d_name.iter_mut().zip(&name[..n]) {
             *slot = byte as _;
         }
+        // Only the terminator needs writing. `FsDir` zeroes the buffer once, so
+        // anything past it is a stale name rather than uninitialised memory --
+        // the same thing readdir(3) leaves behind.
+        out.d_name[n] = 0;
 
         #[cfg(target_os = "linux")]
         {
