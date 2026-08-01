@@ -37,10 +37,12 @@ jobs:
       run: cargo build --verbose
 
     - name: Run tests
-      run: cargo test -p kompo_storage -p kompo_fs --verbose
+      run: cargo test -p kompo_storage -p kompo_fs -p kompo_tree --verbose
 
     - name: Check formatting
       run: cargo fmt -- --check
 
     - name: Run clippy
-      run: cargo clippy -p kompo_storage --no-deps -- -D warnings
+      run: |
+        cargo clippy -p kompo_storage --no-deps -- -D warnings
+        cargo clippy -p kompo_tree --all-targets --no-deps -- -D warnings

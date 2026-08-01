@@ -1,23 +1,24 @@
 mod glue;
 pub mod util;
-use std::ffi::CStr;
 use std::ffi::CString;
-use std::ops::Range;
-use std::path::Path;
-use trie_rs::map::TrieBuilder;
 
-static TRIE: std::sync::OnceLock<std::sync::Arc<kompo_storage::Fs>> = std::sync::OnceLock::new();
+/// The packed filesystem, built the first time a call needs it.
+///
+/// Held directly rather than behind an `Arc`, since `OnceLock` already hands
+/// out a `&'static`; the previous `Arc::clone` per intercepted call was an
+/// atomic refcount bump for nothing.
+static FS: std::sync::OnceLock<kompo_tree::Fs<'static>> = std::sync::OnceLock::new();
 
-pub static WORKING_DIR: std::sync::RwLock<Option<std::ffi::OsString>> =
-    std::sync::RwLock::new(None);
+pub fn fs() -> &'static kompo_tree::Fs<'static> {
+    FS.get_or_init(initialize_fs)
+}
+
+/// Absolute path of the current directory, while it is inside the image.
+pub static WORKING_DIR: std::sync::RwLock<Option<Vec<u8>>> = std::sync::RwLock::new(None);
 
 pub static THREAD_CONTEXT: std::sync::OnceLock<
     std::sync::Arc<std::sync::RwLock<std::collections::HashMap<libc::pthread_t, bool>>>,
 > = std::sync::OnceLock::new();
-
-static FILE_TYPE_CACHE: std::sync::LazyLock<
-    std::sync::RwLock<std::collections::HashMap<Vec<std::ffi::OsString>, libc::stat>>,
-> = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
 
 #[allow(clippy::upper_case_acronyms)]
 type VALUE = u64;
@@ -80,10 +81,6 @@ unsafe extern "C" {
         data2: VALUE,
     ) -> VALUE;
     fn rb_yield(v: VALUE) -> VALUE;
-}
-
-fn initialize_trie() -> std::sync::Arc<kompo_storage::Fs<'static>> {
-    std::sync::Arc::new(initialize_fs())
 }
 
 /// Decompress all files from COMPRESSED_FILES into FILES_BUFFER using zlib
@@ -159,60 +156,53 @@ unsafe extern "C" fn is_context_func(_: VALUE, _: VALUE) -> VALUE {
     }
 }
 
-pub fn initialize_fs() -> kompo_storage::Fs<'static> {
+/// Index the blobs the linker placed in the binary.
+///
+/// Nothing is copied or re-encoded here: the index borrows `PATHS` and `FILES`
+/// where they already sit, so this is the whole of the startup cost.
+pub fn initialize_fs() -> kompo_tree::Fs<'static> {
     let compression_enabled = unsafe { COMPRESSION_ENABLED } != 0;
 
-    // If compression is enabled, decompress all files first
     if compression_enabled {
         decompress_all_files();
     }
 
-    let mut builder = TrieBuilder::new();
+    let paths =
+        unsafe { std::slice::from_raw_parts(&raw const PATHS as *const u8, PATHS_SIZE as _) };
 
-    let path_slice = unsafe {
-        std::slice::from_raw_parts(&PATHS as *const libc::c_char as *const u8, PATHS_SIZE as _)
-    };
-
-    // Use FILES_BUFFER when compression is enabled, FILES otherwise
-    let file_slice = if compression_enabled {
+    let files = if compression_enabled {
         unsafe {
-            std::slice::from_raw_parts(
-                std::ptr::addr_of!(FILES_BUFFER) as *const libc::c_char as *const u8,
-                FILES_BUFFER_SIZE as _,
-            )
+            std::slice::from_raw_parts(&raw const FILES_BUFFER as *const u8, FILES_BUFFER_SIZE as _)
         }
     } else {
-        unsafe {
-            std::slice::from_raw_parts(&FILES as *const libc::c_char as *const u8, FILES_SIZE as _)
-        }
+        unsafe { std::slice::from_raw_parts(&raw const FILES as *const u8, FILES_SIZE as _) }
     };
 
-    let splited_path_array = path_slice
-        .split_inclusive(|a| *a == b'\0')
-        .collect::<Vec<_>>();
-
-    // Use ORIGINAL_SIZES when compression is enabled, FILES_SIZES otherwise
-    let files_sizes = if compression_enabled {
-        unsafe { std::slice::from_raw_parts(&ORIGINAL_SIZES, splited_path_array.len() + 1) }
-    } else {
-        unsafe { std::slice::from_raw_parts(&FILES_SIZES, splited_path_array.len() + 1) }
+    // FILES_SIZES holds cumulative offsets, so it has one more entry than
+    // there are paths.
+    let count = kompo_tree::path_count(paths);
+    let file_offsets = unsafe {
+        std::slice::from_raw_parts(
+            if compression_enabled {
+                &raw const ORIGINAL_SIZES
+            } else {
+                &raw const FILES_SIZES
+            },
+            count + 1,
+        )
     };
 
-    for (i, path_byte) in splited_path_array.into_iter().enumerate() {
-        let path = Path::new(unsafe {
-            let bytes = std::slice::from_raw_parts(path_byte.as_ptr(), path_byte.len());
-            CStr::from_bytes_with_nul_unchecked(bytes).to_str().unwrap()
-        });
-        let path = path.iter().collect::<Vec<_>>();
+    let fs = kompo_tree::Fs::new(paths, files, file_offsets);
 
-        let range: Range<usize> = files_sizes[i] as usize..files_sizes[i + 1] as usize;
-        let file = &file_slice[range];
-        let file = unsafe { std::slice::from_raw_parts(file.as_ptr(), file.len()) };
+    // The generator canonicalises every path. If that ever stops being true,
+    // lookups stay correct but give up their fast miss, so catch it here --
+    // this is the only place a real image enters the index.
+    debug_assert!(
+        fs.paths_are_canonical(),
+        "generator emitted a non-canonical path"
+    );
 
-        builder.push(path, file);
-    }
-
-    kompo_storage::Fs::new(builder)
+    fs
 }
 
 /// # Safety
@@ -237,13 +227,15 @@ pub unsafe extern "C" fn kompo_fs_set_entrypoint_dir(entrypoint_path: *const lib
         return;
     }
 
-    let path_cstr = unsafe { CStr::from_ptr(entrypoint_path) };
-    let path = Path::new(path_cstr.to_str().expect("invalid entrypoint path"));
+    let path = unsafe { util::path_bytes(entrypoint_path) };
 
-    if let Some(parent) = path.parent() {
-        let parent_os_str = parent.as_os_str().to_os_string();
-        *WORKING_DIR.write().unwrap() = Some(parent_os_str);
-    }
+    // The generator emits this canonical, so the parent is everything before
+    // the last separator.
+    let Some(end) = util::parent_end(path) else {
+        return;
+    };
+
+    *WORKING_DIR.write().unwrap() = Some(path[..end].to_vec());
 }
 
 #[cfg(test)]
@@ -252,17 +244,15 @@ mod tests {
 
     use super::*;
     use serial_test::serial;
+    use std::ffi::CStr;
     use std::ffi::CString;
 
     #[test]
     fn test_initialize_fs() {
         let fs = initialize_fs();
         // Verify we can access files from the test data
-        let path = std::path::Path::new("/test/hello.txt");
-        let path_vec: Vec<&std::ffi::OsStr> = path.iter().collect();
-
         let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
-        let result = fs.stat(&path_vec, &mut stat_buf);
+        let result = fs.stat(b"/test/hello.txt", &mut stat_buf);
         assert!(result.is_some());
         assert_eq!(stat_buf.st_size, 13); // "Hello, World!" is 13 bytes
     }
@@ -512,6 +502,72 @@ mod tests {
         );
     }
 
+    /// The reason paths are handled as bytes. Nothing validates encoding when
+    /// the image is built, so a gem shipping a Latin-1 filename reaches us as
+    /// invalid UTF-8; this used to panic inside `to_str().unwrap()`.
+    #[test]
+    fn non_utf8_path_does_not_panic() {
+        let path = CString::new(b"/test/caf\xE9.rb".to_vec()).unwrap();
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+
+        let result = glue::stat_from_fs(path.as_ptr(), &mut stat_buf);
+        assert_eq!(result, -1);
+        assert_eq!(errno::errno().0, libc::ENOENT);
+    }
+
+    #[test]
+    #[serial]
+    fn relative_paths_resolve_against_the_working_dir() {
+        let entrypoint = CString::new("/test/main.rb").unwrap();
+        unsafe { kompo_fs_set_entrypoint_dir(entrypoint.as_ptr()) };
+
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+        let relative = CString::new("hello.txt").unwrap();
+        assert_eq!(glue::stat_from_fs(relative.as_ptr(), &mut stat_buf), 0);
+        assert_eq!(stat_buf.st_size, 13);
+
+        // `.` and `..` are resolved against the working directory too.
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+        let winding = CString::new("./sub/../hello.txt").unwrap();
+        assert_eq!(glue::stat_from_fs(winding.as_ptr(), &mut stat_buf), 0);
+        assert_eq!(stat_buf.st_size, 13);
+
+        WORKING_DIR.write().unwrap().take();
+    }
+
+    /// The working directory is matched as a byte prefix, so a sibling whose
+    /// name merely extends it must not be captured.
+    #[test]
+    fn a_sibling_of_the_working_dir_is_not_ours() {
+        let path = CString::new("/testing/hello.txt").unwrap();
+        let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+
+        // Not in the image, and not the VFS's to answer -- it falls through to
+        // the real filesystem, where it does not exist either.
+        assert_eq!(glue::stat_from_fs(path.as_ptr(), &mut stat_buf), -1);
+        assert!(!util::is_under_kompo_working_dir(b"/testing/hello.txt"));
+        assert!(util::is_under_kompo_working_dir(b"/test/hello.txt"));
+        assert!(util::is_under_kompo_working_dir(b"/test"));
+    }
+
+    /// `realpath(3)` promises a canonical path, so an oddly spelled argument
+    /// must not come back unchanged.
+    #[test]
+    #[serial]
+    fn realpath_canonicalises() {
+        WORKING_DIR.write().unwrap().take();
+
+        let path = CString::new("/test/./hello.txt").unwrap();
+        let resolved = unsafe { glue::realpath_from_fs(path.as_ptr(), std::ptr::null_mut()) };
+        assert!(!resolved.is_null());
+        assert_eq!(
+            unsafe { CStr::from_ptr(resolved) }.to_bytes(),
+            b"/test/hello.txt"
+        );
+
+        unsafe { drop(CString::from_raw(resolved as *mut libc::c_char)) };
+    }
+
     #[test]
     #[serial]
     fn test_kompo_fs_set_entrypoint_dir_with_valid_path() {
@@ -528,7 +584,7 @@ mod tests {
         let working_dir = WORKING_DIR.write().unwrap().take();
         assert!(working_dir.is_some());
         let dir_path = working_dir.unwrap();
-        assert_eq!(dir_path.to_str().unwrap(), "/app/bin");
+        assert_eq!(dir_path, b"/app/bin");
     }
 
     #[test]
@@ -563,6 +619,6 @@ mod tests {
         let working_dir = WORKING_DIR.write().unwrap().take();
         assert!(working_dir.is_some());
         let dir_path = working_dir.unwrap();
-        assert_eq!(dir_path.to_str().unwrap(), "/");
+        assert_eq!(dir_path, b"/");
     }
 }

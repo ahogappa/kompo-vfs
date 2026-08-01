@@ -1,233 +1,193 @@
-use std::{
-    env,
-    ffi::{CStr, CString},
-    hash::{DefaultHasher, Hash, Hasher},
-    os::unix::ffi::OsStrExt,
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::borrow::Cow;
+use std::ffi::CStr;
+use std::sync::OnceLock;
 
-use crate::{TRIE, WD, WORKING_DIR};
+use crate::{FS, WD, WORKING_DIR};
 
-/// # Safety
-/// `other_path` must be a valid pointer to a null-terminated C string.
-pub unsafe fn is_under_kompo_working_dir(other_path: *const libc::c_char) -> bool {
-    let wd = unsafe { CStr::from_ptr(&WD) };
-    let other_path = unsafe { CStr::from_ptr(other_path) };
+/// Is `path` inside the packed working directory?
+///
+/// The generator emits `WD` canonical and without a trailing slash, so a byte
+/// prefix match answers it. The boundary check is what keeps a sibling like
+/// `/tmp/kompo-abcdefg` out when the working directory is `/tmp/kompo-abcdef`.
+pub fn is_under_kompo_working_dir(path: &[u8]) -> bool {
+    let wd = working_dir_prefix();
 
-    other_path.to_bytes().starts_with(wd.to_bytes())
+    path.starts_with(wd) && matches!(path.get(wd.len()), None | Some(b'/'))
 }
 
-pub fn canonicalize_path(base: &mut PathBuf, join_path: &Path) {
-    for comp in join_path.components() {
+/// The packed working directory, measured once.
+///
+/// `WD` is a linker constant, so the `strlen` behind `CStr::from_ptr` finds the
+/// same answer every time -- and this runs on the reject path of every
+/// intercepted call, before we know the path is not ours.
+fn working_dir_prefix() -> &'static [u8] {
+    static PREFIX: OnceLock<&'static [u8]> = OnceLock::new();
+
+    PREFIX.get_or_init(|| unsafe { CStr::from_ptr(&raw const WD) }.to_bytes())
+}
+
+/// Index just past the parent directory of `path`, clamped so it never points
+/// above the root, or `None` when there is no separator to split on.
+pub fn parent_end(path: &[u8]) -> Option<usize> {
+    path.iter()
+        .rposition(|&b| b == b'/')
+        .map(|slash| slash.max(1))
+}
+
+/// Join `rel` onto `base`, resolving `.` and `..` lexically.
+///
+/// Nothing here touches the real filesystem, so it cannot follow a symlink the
+/// way `realpath(3)` would. The image holds no symlinks, so there is nothing to
+/// follow.
+pub fn join_normalized(base: &[u8], rel: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(base.len() + 1 + rel.len());
+    out.extend_from_slice(base);
+
+    for comp in rel.split(|&b| b == b'/') {
         match comp {
-            std::path::Component::Normal(comp) => {
-                base.push(comp);
+            b"" | b"." => {}
+            b".." => {
+                if let Some(end) = parent_end(&out) {
+                    out.truncate(end);
+                }
             }
-            std::path::Component::ParentDir => {
-                base.pop();
-            }
-            std::path::Component::RootDir => {
-                // do nothing
-            }
-            std::path::Component::Prefix(_) => todo!(),
-            std::path::Component::CurDir => {
-                // do nothing
+            _ => {
+                if out.last() != Some(&b'/') {
+                    out.push(b'/');
+                }
+                out.extend_from_slice(comp);
             }
         }
     }
+
+    out
 }
 
-/// # Safety
-/// `raw_path` must be a valid pointer to a null-terminated C string.
-pub unsafe fn expand_kompo_path(raw_path: *const libc::c_char) -> *const libc::c_char {
-    let path = unsafe { CStr::from_ptr(raw_path) };
-    let path = PathBuf::from_str(path.to_str().expect("invalid path")).expect("invalid path");
-
-    if path.is_absolute() {
-        let path = CString::new(path.to_str().expect("invalid path"))
-            .expect("invalid path")
-            .into_boxed_c_str();
-        let path = Box::into_raw(path);
-
-        return path as *const libc::c_char;
+/// The absolute path this call should resolve inside the image, or `None` when
+/// it belongs to the real filesystem.
+///
+/// An absolute path is borrowed as-is; a relative one is joined onto the
+/// working directory, which only means anything while that directory is itself
+/// inside the image.
+pub fn kompo_path(path: &[u8]) -> Option<Cow<'_, [u8]>> {
+    if path.first() == Some(&b'/') {
+        return is_under_kompo_working_dir(path).then_some(Cow::Borrowed(path));
     }
 
-    let wd = WORKING_DIR.read().unwrap().clone().unwrap();
-    let mut wd = PathBuf::from(wd);
+    let working_dir = WORKING_DIR.read().ok()?;
+    let working_dir = working_dir.as_deref()?;
 
-    canonicalize_path(&mut wd, &path);
-
-    let wd = CString::new(wd.to_str().expect("invalid path"))
-        .expect("invalid path")
-        .into_boxed_c_str();
-    let wd = Box::into_raw(wd);
-
-    wd as *const libc::c_char
+    Some(Cow::Owned(join_normalized(working_dir, path)))
 }
 
-pub fn current_dir_hash() -> u64 {
-    let mut hasher = DefaultHasher::new();
-    WORKING_DIR
-        .read()
-        .unwrap()
-        .as_ref()
-        .unwrap()
-        .hash(&mut hasher);
-    hasher.finish()
+/// Like [`kompo_path`], for the `*at` calls.
+///
+/// A relative name is only ours when it resolves against the working
+/// directory, which is what `AT_FDCWD` asks for; any other `dirfd` names a
+/// directory in the real filesystem.
+pub fn kompo_path_at(dirfd: libc::c_int, path: &[u8]) -> Option<Cow<'_, [u8]>> {
+    if path.first() != Some(&b'/') && dirfd != libc::AT_FDCWD {
+        return None;
+    }
+
+    kompo_path(path)
 }
 
 /// # Safety
-/// `other_path` must be a valid pointer to a null-terminated C string.
-pub unsafe fn is_under_kompo_tmp_dir(other_path: *const libc::c_char) -> bool {
-    let mut tmpdir = env::temp_dir();
-    tmpdir.push(format!("{}", current_dir_hash()));
-    let other_path = unsafe { CStr::from_ptr(other_path) };
-
-    other_path
-        .to_bytes()
-        .starts_with(tmpdir.as_os_str().as_bytes())
+/// `path` must be a valid pointer to a null-terminated C string.
+pub unsafe fn path_bytes<'a>(path: *const libc::c_char) -> &'a [u8] {
+    unsafe { CStr::from_ptr(path) }.to_bytes()
 }
 
 pub fn is_fd_exists_in_kompo(fd: i32) -> bool {
-    if TRIE.get().is_none() {
-        return false;
-    }
-
-    let trie = std::sync::Arc::clone(TRIE.get().unwrap());
-    trie.is_fd_exists(fd)
+    FS.get().is_some_and(|fs| fs.is_fd_exists(fd))
 }
 
 /// # Safety
-/// `dir` must be a valid pointer to a `FsDir` that was previously allocated by this crate.
+/// `dir` must be a valid pointer to an `FsDir` that was previously allocated by
+/// this crate.
 pub unsafe fn is_dir_exists_in_kompo(dir: *mut libc::DIR) -> bool {
-    if TRIE.get().is_none() {
+    let Some(fs) = FS.get() else {
+        return false;
+    };
+    if dir.is_null() {
         return false;
     }
 
-    let dir = unsafe { Box::from_raw(dir as *mut kompo_storage::FsDir) };
+    let dir = unsafe { &*(dir as *const kompo_tree::FsDir) };
 
-    let trie = std::sync::Arc::clone(TRIE.get().unwrap());
-    let bool = trie.is_dir_exists(&dir);
-
-    let _ = Box::into_raw(dir);
-    bool
+    fs.is_dir_exists(dir)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
-    fn test_canonicalize_path_simple() {
-        let mut base = PathBuf::from("/home/user");
-        let join_path = PathBuf::from("documents");
-
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/home/user/documents"));
+    fn join_normalized_appends_components() {
+        assert_eq!(
+            join_normalized(b"/home/user", b"documents"),
+            b"/home/user/documents"
+        );
+        assert_eq!(
+            join_normalized(b"/home/user", b"documents/work"),
+            b"/home/user/documents/work"
+        );
     }
 
     #[test]
-    fn test_canonicalize_path_with_parent_dir() {
-        let mut base = PathBuf::from("/home/user/projects");
-        let join_path = PathBuf::from("../documents");
-
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/home/user/documents"));
+    fn join_normalized_resolves_parent_components() {
+        assert_eq!(
+            join_normalized(b"/home/user/projects", b"../documents"),
+            b"/home/user/documents"
+        );
+        assert_eq!(
+            join_normalized(b"/home/user/projects/rust", b"../../documents/work"),
+            b"/home/user/documents/work"
+        );
+        assert_eq!(
+            join_normalized(b"/home/user/documents", b".."),
+            b"/home/user"
+        );
     }
 
     #[test]
-    fn test_canonicalize_path_multiple_parent_dirs() {
-        let mut base = PathBuf::from("/home/user/projects/rust");
-        let join_path = PathBuf::from("../../documents/work");
-
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/home/user/documents/work"));
+    fn join_normalized_drops_current_dir_components() {
+        assert_eq!(
+            join_normalized(b"/home/user", b"./documents/./work"),
+            b"/home/user/documents/work"
+        );
+        assert_eq!(join_normalized(b"/home/user", b"."), b"/home/user");
+        assert_eq!(join_normalized(b"/home/user", b""), b"/home/user");
     }
 
     #[test]
-    fn test_canonicalize_path_with_current_dir() {
-        let mut base = PathBuf::from("/home/user");
-        let join_path = PathBuf::from("./documents/./work");
-
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/home/user/documents/work"));
+    fn join_normalized_handles_mixed_components() {
+        assert_eq!(
+            join_normalized(b"/home/user/projects", b"./rust/../go/./src"),
+            b"/home/user/projects/go/src"
+        );
+        assert_eq!(join_normalized(b"/", b"a/b/c/../d/./e"), b"/a/b/d/e");
     }
 
     #[test]
-    fn test_canonicalize_path_complex() {
-        let mut base = PathBuf::from("/home/user/projects");
-        let join_path = PathBuf::from("./rust/../go/./src");
+    fn join_normalized_never_escapes_the_root() {
+        assert_eq!(join_normalized(b"/home", b"../../etc"), b"/etc");
+        assert_eq!(join_normalized(b"/", b".."), b"/");
+    }
 
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/home/user/projects/go/src"));
+    /// A leading separator in the joined path is a component boundary, not a
+    /// restart -- this matches how the previous `PathBuf`-based version behaved.
+    #[test]
+    fn join_normalized_treats_a_rooted_join_as_relative() {
+        assert_eq!(
+            join_normalized(b"/home/user", b"/etc/config"),
+            b"/home/user/etc/config"
+        );
     }
 
     #[test]
-    fn test_canonicalize_path_absolute_in_join() {
-        let mut base = PathBuf::from("/home/user");
-        let join_path = PathBuf::from("/etc/config");
-
-        canonicalize_path(&mut base, &join_path);
-
-        // RootDir component is ignored, so only "etc" and "config" are added
-        assert_eq!(base, PathBuf::from("/home/user/etc/config"));
-    }
-
-    #[test]
-    fn test_canonicalize_path_parent_beyond_root() {
-        let mut base = PathBuf::from("/home");
-        let join_path = PathBuf::from("../../etc");
-
-        canonicalize_path(&mut base, &join_path);
-
-        // After two parent dirs from /home, we're at / then add etc
-        assert_eq!(base, PathBuf::from("/etc"));
-    }
-
-    #[test]
-    fn test_canonicalize_path_empty_join() {
-        let mut base = PathBuf::from("/home/user");
-        let join_path = PathBuf::from("");
-
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/home/user"));
-    }
-
-    #[test]
-    fn test_canonicalize_path_only_current_dir() {
-        let mut base = PathBuf::from("/home/user");
-        let join_path = PathBuf::from(".");
-
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/home/user"));
-    }
-
-    #[test]
-    fn test_canonicalize_path_only_parent_dir() {
-        let mut base = PathBuf::from("/home/user/documents");
-        let join_path = PathBuf::from("..");
-
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/home/user"));
-    }
-
-    #[test]
-    fn test_canonicalize_path_nested_structure() {
-        let mut base = PathBuf::from("/");
-        let join_path = PathBuf::from("a/b/c/../d/./e");
-
-        canonicalize_path(&mut base, &join_path);
-
-        assert_eq!(base, PathBuf::from("/a/b/d/e"));
+    fn join_normalized_collapses_redundant_separators() {
+        assert_eq!(join_normalized(b"/home/user", b"a//b"), b"/home/user/a/b");
     }
 }

@@ -9,9 +9,7 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 libc = "0.2.169"
-trie-rs = "0.4.2"
-rustc-hash = "2"
-kompo_storage = { path = "../kompo_storage" }
+kompo_tree = { path = "../kompo_tree" }
 kompo_wrap = { path = "../kompo_wrap" } 
 errno = "*"
 

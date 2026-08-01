@@ -8,9 +8,13 @@ kompo-vfs consists of three main components:
 
 | Crate | Description |
 |-------|-------------|
-| `kompo_fs` | Core virtual filesystem implementation using a trie data structure for efficient path lookup |
-| `kompo_storage` | Storage layer that manages file data and directory entries |
+| `kompo_fs` | Core virtual filesystem: the interposed libc entry points and the Ruby bindings |
+| `kompo_tree` | Path index and file table over the embedded data |
 | `kompo_wrap` | System call wrapper that intercepts and redirects filesystem operations |
+
+`kompo_storage` is the previous trie-based index. Nothing links it any more; it is kept so `cargo bench -p kompo_tree` can measure the two side by side on the same image.
+
+`kompo_tree` replaced it because path lookup through the trie cost more than the real filesystem it stands in for. It indexes whole paths in one hash and gives each directory a contiguous range of entries, so `readdir` neither searches nor allocates. Paths are handled as bytes end to end, which also means a filename that is not valid UTF-8 is looked up rather than panicked on.
 
 ### How It Works
 
@@ -64,7 +68,7 @@ This library is designed to be used with the [kompo](https://github.com/ahogappa
 ### Running Tests
 
 ```sh
-$ cargo test -p kompo_storage -p kompo_fs
+$ cargo test -p kompo_storage -p kompo_fs -p kompo_tree
 ```
 
 ### Project Structure
@@ -73,8 +77,16 @@ $ cargo test -p kompo_storage -p kompo_fs
 kompo-vfs/
 ├── kompo_fs/           # Core VFS implementation
 │   └── src/
-│       └── lib.rs      # Trie-based filesystem, Ruby bindings
-├── kompo_storage/      # Storage layer
+│       ├── lib.rs      # Startup, Ruby bindings
+│       ├── glue.rs     # Interposed libc entry points
+│       └── util.rs     # Path resolution
+├── kompo_tree/         # Path index and file table
+│   ├── src/
+│   │   ├── lib.rs      # Fs API: open, read, stat, readdir
+│   │   └── tree.rs     # Node arena and path resolution
+│   └── benches/
+│       └── tree_bench.rs # A/B against kompo_storage
+├── kompo_storage/      # Previous trie index, kept for the benchmark
 │   └── src/
 │       └── lib.rs      # File/directory data management
 ├── kompo_wrap/         # System call wrappers

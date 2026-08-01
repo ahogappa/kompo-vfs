@@ -299,12 +299,10 @@ version = "0.6.0"
 dependencies = [
  "errno",
  "kompo_fs_test_data",
- "kompo_storage",
+ "kompo_tree",
  "kompo_wrap",
  "libc",
- "rustc-hash",
  "serial_test",
- "trie-rs",
 ]
 
 [[package]]
@@ -320,6 +318,17 @@ name = "kompo_storage"
 version = "0.6.0"
 dependencies = [
  "criterion",
+ "libc",
+ "rustc-hash",
+ "trie-rs",
+]
+
+[[package]]
+name = "kompo_tree"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "kompo_storage",
  "libc",
  "rustc-hash",
  "trie-rs",
