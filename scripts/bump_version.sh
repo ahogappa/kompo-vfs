@@ -7,6 +7,14 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CARGO_TOML="$PROJECT_ROOT/Cargo.toml"
 FORMULA_FILE="$PROJECT_ROOT/Formula/kompo-vfs.rb"
 
+# GNU sed takes the -i suffix attached, BSD sed takes it as a separate
+# argument, so an invocation that works on one errors on the other.
+if sed --version >/dev/null 2>&1; then
+    sed_inplace() { sed -i "$@"; }
+else
+    sed_inplace() { sed -i '' "$@"; }
+fi
+
 CURRENT_VERSION=$(sed -n '/\[workspace\.package\]/,/^\[/{ s/^version = "\(.*\)"/\1/p; }' "$CARGO_TOML")
 
 if [ -z "$1" ]; then
@@ -22,11 +30,11 @@ NEW_VERSION="$1"
 echo "Updating version to $NEW_VERSION..."
 
 # Update workspace.package.version in root Cargo.toml
-sed -i '' "/\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$NEW_VERSION\"/" "$CARGO_TOML"
+sed_inplace "/\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$NEW_VERSION\"/" "$CARGO_TOML"
 echo "  Updated: Cargo.toml (workspace.package.version)"
 
 # Update Formula
-sed -i '' "s/^  version \".*\"/  version \"$NEW_VERSION\"/" "$FORMULA_FILE"
+sed_inplace "s/^  version \".*\"/  version \"$NEW_VERSION\"/" "$FORMULA_FILE"
 echo "  Updated: Formula/kompo-vfs.rb"
 
 echo ""
