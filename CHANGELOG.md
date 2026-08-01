@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-01
+
+### Added
+- Add `kompo_tree`, a flat-arena path index replacing the trie in `kompo_storage` [#24](https://github.com/ahogappa/kompo-vfs/pull/24)
+
+### Changed
+- Index the embedded image with `kompo_tree`: `stat` 4.0-15.7us -> ~11ns, `readdir` on a 40 entry directory 7.5ms -> 1.0us [#24](https://github.com/ahogappa/kompo-vfs/pull/24)
+- Handle paths as bytes throughout, so a filename that is not valid UTF-8 is looked up rather than panicked on [#24](https://github.com/ahogappa/kompo-vfs/pull/24)
+- Report inodes as `INO_BASE | node_id`, unique by construction and clear of the range a real filesystem uses [#24](https://github.com/ahogappa/kompo-vfs/pull/24)
+- Reuse the `dirent` owned by the `DIR` in `readdir`, matching `readdir(3)` and no longer leaking 280 bytes per call [#24](https://github.com/ahogappa/kompo-vfs/pull/24)
+- `kompo_storage` is no longer linked; it remains only as the benchmark baseline [#24](https://github.com/ahogappa/kompo-vfs/pull/24)
+
+### Fixed
+- Return a canonical path from `realpath` instead of the caller's spelling [#24](https://github.com/ahogappa/kompo-vfs/pull/24)
+- Stop claiming sibling directories whose name extends the working directory's [#24](https://github.com/ahogappa/kompo-vfs/pull/24)
+- Make `bump_version.sh` work with GNU sed as well as BSD sed [#25](https://github.com/ahogappa/kompo-vfs/pull/25)
+
 ## [0.6.0] - 2026-01-31
 
 ### Added
