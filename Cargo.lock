@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "kompo_fs"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "errno",
  "kompo_fs_test_data",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "kompo_storage"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "criterion",
  "libc",
@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "kompo_tree"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "criterion",
  "kompo_storage",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "kompo_wrap"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "libc",
  "paste",
